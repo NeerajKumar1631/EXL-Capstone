@@ -1,0 +1,55 @@
+# ── Data ─────────────────────────────────────────────
+yfinance>=0.2.40              # prices + no-key news
+pandas>=2.2
+numpy>=2.0
+pyarrow>=16.0                 # parquet cache
+
+# ── Technical indicators ─────────────────────────────
+ta>=0.11                      # numpy-2 clean (pandas-ta imports numpy.NaN and breaks)
+
+# ── Forecasting ──────────────────────────────────────
+statsmodels>=0.14
+scikit-learn>=1.5
+xgboost>=2.1
+lightgbm>=4.5
+catboost>=1.2
+
+# ── News ─────────────────────────────────────────────
+# Event Registry (newsapi.ai) is called directly via requests; yfinance provides
+# a no-key fallback. RSS/feedparser dropped (pyexpat is broken in this Python build).
+requests>=2.32
+
+# ── Dedup / retrieval ────────────────────────────────
+rapidfuzz>=3.9
+rank-bm25>=0.2.2
+
+# ── Embeddings + sentiment (NLP) ─────────────────────
+sentence-transformers>=3.0
+transformers>=4.44
+torch>=2.4
+
+# ── LLM ──────────────────────────────────────────────
+google-genai>=1.0             # current unified Gemini SDK
+
+# ── Conversational agent (LangChain) ─────────────────
+# IMPORTANT: langchain-google-genai must be imported AFTER xgboost or macOS segfaults on
+# an OpenMP runtime conflict — handled in chat/agent.py (imports xgboost first).
+langchain>=0.3
+langchain-google-genai>=4.0
+
+# ── Config ───────────────────────────────────────────
+pydantic>=2.8
+pydantic-settings>=2.4
+python-dotenv>=1.0
+
+# ── Storage ──────────────────────────────────────────
+SQLAlchemy>=2.0
+
+# ── Frontend / viz ───────────────────────────────────
+streamlit>=1.38
+plotly>=5.24
+matplotlib>=3.9
+
+# ── Utils / tests ────────────────────────────────────
+tenacity>=9.0                 # retries
+pytest>=8.3

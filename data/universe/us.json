@@ -1,0 +1,48 @@
+{
+  "region": "US",
+  "benchmark": "^GSPC",
+  "indices": {
+    "dow30": {
+      "name": "Dow Jones 30",
+      "exchange": "US",
+      "full": true,
+      "tickers": ["AAPL","AMGN","AMZN","AXP","BA","CAT","CRM","CSCO","CVX","DIS","GS","HD","HON","IBM","JNJ","JPM","KO","MCD","MMM","MRK","MSFT","NKE","NVDA","PG","SHW","TRV","UNH","V","VZ","WMT"]
+    },
+    "nasdaq100": {
+      "name": "Nasdaq 100 (large-cap subset)",
+      "exchange": "US",
+      "full": false,
+      "tickers": ["AAPL","MSFT","NVDA","AMZN","GOOGL","GOOG","META","TSLA","AVGO","COST","PEP","NFLX","ADBE","AMD","CSCO","TMUS","INTC","QCOM","INTU","TXN","AMAT","HON","BKNG","ISRG","VRTX","ADP","REGN","MU","LRCX","PANW","SNPS","CDNS","KLAC","MELI","PYPL","MRVL","ORLY","CRWD","ABNB","FTNT"]
+    },
+    "sp500": {
+      "name": "S&P 500 (large-cap subset)",
+      "exchange": "US",
+      "full": false,
+      "tickers": ["AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA","BRK-B","AVGO","JPM","V","MA","UNH","HD","PG","JNJ","KO","PEP","COST","WMT","XOM","CVX","LLY","ABBV","MRK","PFE","BAC","WFC","GS","MS","CAT","BA","HON","GE","IBM","ORCL","CRM","ADBE","AMD","INTC","CSCO","QCOM","TXN","NFLX","DIS","CMCSA","VZ","T","NKE","MCD","SBUX","LOW","BLK","SPGI","GILD","BMY","TMO","ABT","DHR","COP"]
+    },
+    "sector_tech": {
+      "name": "Sector · Technology",
+      "exchange": "US",
+      "full": false,
+      "tickers": ["AAPL","MSFT","NVDA","AVGO","ORCL","CRM","ADBE","AMD","CSCO","QCOM"]
+    },
+    "sector_financials": {
+      "name": "Sector · Financials",
+      "exchange": "US",
+      "full": false,
+      "tickers": ["JPM","BAC","WFC","GS","MS","V","MA","AXP","BLK","SPGI"]
+    },
+    "sector_energy": {
+      "name": "Sector · Energy",
+      "exchange": "US",
+      "full": false,
+      "tickers": ["XOM","CVX","COP","SLB","EOG","MPC","PSX","OXY"]
+    },
+    "sector_healthcare": {
+      "name": "Sector · Healthcare",
+      "exchange": "US",
+      "full": false,
+      "tickers": ["LLY","UNH","JNJ","MRK","ABBV","PFE","TMO","ABT","DHR","BMY"]
+    }
+  }
+}
