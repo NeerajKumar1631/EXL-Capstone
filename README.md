@@ -1,6 +1,5 @@
 # StockSense AI — Stock Price Prediction using Sentiment Analysis, Agentic AI & Machine Learning
 
-> Final-year Major Project · NIT Hamirpur · Department of Mathematics & Scientific Computing
 
 StockSense AI is a **stock-analysis agent**. Given a ticker it forecasts the next move with real ML
 models, reads and scores recent news, and fuses both into a **grounded Buy / Hold / Sell** call with a
@@ -223,5 +222,6 @@ persistence + Docker, and broader news sources. See `plan.md`.
 
 ## Team
 
-Himanshu Kansal (22bee063) · Adarsh Singh (22bma002) · Sahil Jaswal (22bma032) · Manish Kumar (22bma019).
-Guide: Dr. Sunil, DOMSC.
+Adarsh Singh (351011)
+Sandeep Yadav (351508)
+Neeraj Kumar (351293)
