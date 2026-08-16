@@ -40,7 +40,7 @@ capability is exposed as an `Agent` with a uniform `run()` interface + logging +
 
 | # | Agent (brief) | Genuine LLM? | Backed by (pre-existing tool) |
 |---|---------------|--------------|-------------------------------|
-| 1 | Data Collection | No | `yfinance` (+ Stooq fallback, disk cache) |
+| 1 | Data Collection | No | `yfinance` (disk cache + retries + stale-cache fallback) |
 | 2 | Technical Analysis | No | `ta` (pandas-ta breaks on NumPy 2.x) |
 | 3 | Forecast | No | `statsmodels` (ARIMA), `xgboost`, `lightgbm`, `catboost`, `scikit-learn` |
 | 4 | News Collection | No | Event Registry API (`requests`) + yfinance `.news` fallback |
@@ -48,8 +48,8 @@ capability is exposed as an `Agent` with a uniform `run()` interface + logging +
 | 6 | Embedding | No | `sentence-transformers` (`all-MiniLM-L6-v2`) |
 | 7 | Retrieval / Ranking | No | `rank_bm25` + cosine similarity (semantic) |
 | 8 | Sentiment | No | `transformers` + `ProsusAI/finbert` |
-| 9 | Summarization | **Yes** | Gemini 2.5 Flash (via `LLMClient`) |
-| 10 | Recommendation | **Yes** | Gemini 2.5 Flash (via `LLMClient`) + custom fusion logic |
+| 9 | Summarization | **Yes** | Gemini via `LLMClient` — merged into the Analyst call (v3) |
+| 10 | Recommendation | **Yes** | Gemini via `LLMClient` + custom fusion logic |
 
 **Custom code we own:** the orchestration DAG, the forecast ensemble/evaluation, the news relevance
 ranker, the sentiment aggregation, and the recommendation fusion + grounding.
@@ -70,23 +70,22 @@ flowchart TD
     end
 
     subgraph News[News & sentiment pipeline]
-        ORCH --> N[News Collection Agent<br/>NewsAPI + RSS]
+        ORCH --> N[News Collection Agent<br/>Event Registry + yfinance]
         N --> DD[Dedup Agent<br/>RapidFuzz]
         DD --> EM[Embedding Agent<br/>MiniLM]
         EM --> RT[Retrieval Agent<br/>BM25 + semantic ranking]
         RT --> SE[Sentiment Agent<br/>FinBERT]
-        SE --> SU[Summarization Agent<br/>Gemini]
-        SU --> NR[NewsResult<br/>summary, weighted sentiment, top articles]
+        SE --> SS[SentimentSummary<br/>credibility-weighted]
     end
 
     subgraph Context[Context]
         ORCH --> MC[Macro/Fundamentals Agent<br/>proxies now, FRED later]
     end
 
-    FR --> REC[Recommendation Agent<br/>fusion + grounded LLM reasoning]
-    NR --> REC
+    FR --> REC[Analyst Agent<br/>ONE grounded Gemini call]
+    SS --> REC
     MC --> REC
-    REC --> OUT[AnalysisResult:<br/>Buy/Hold/Sell + confidence + thesis + risks + sources]
+    REC --> OUT[AnalysisResult:<br/>news summary + Buy/Hold/Sell<br/>+ confidence + thesis + risks + sources]
     OUT --> UI[Streamlit Dashboard]
 ```
 
@@ -101,19 +100,20 @@ All shared data structures live in `orchestration/schemas.py` (pydantic models).
 | `data_ingestion/prices.py` | `fetch_prices(ticker, period, interval)` | ticker → OHLCV `DataFrame` (cached) |
 | `data_ingestion/news.py` | `fetch_news(ticker, company, days)` | ticker/company → `list[Article]` |
 | `data_ingestion/context.py` | `fetch_context(ticker)` | ticker → `MarketContext` (macro proxies, fundamentals) |
-| `technical_analysis/features.py` | `build_features(prices)` | OHLCV → feature `DataFrame` (indicators, lags, returns, vol) |
-| `forecasting/forecaster.py` | `run_forecast(features)` | features → `ForecastResult` (per-model + ensemble, metrics, horizons) |
+| `technical_analysis/features.py` | `build_features(prices, sentiment=None)` | OHLCV → feature `DataFrame` (indicators, lags, returns, vol; sentiment only above the coverage gate) |
+| `forecasting/forecaster.py` | `run_forecast(prices, ticker, use_cache=True)` | prices → `ForecastResult` (per-model + ensemble, metrics, horizons; cached) |
 | `retrieval/dedup.py` | `deduplicate(articles)` | `list[Article]` → deduped `list[Article]` |
 | `embeddings/encoder.py` | `embed(texts)` | `list[str]` → `ndarray` |
 | `retrieval/ranker.py` | `rank(query, articles, k)` | query + articles → top-k `list[Article]` |
 | `sentiment/finbert.py` | `score(articles)` | articles → articles + per-article sentiment |
 | `sentiment/aggregate.py` | `aggregate(articles)` | scored articles → `SentimentSummary` (weighted score) |
-| `llm/summarizer.py` | `summarize(articles, ticker)` | top articles → `str` summary |
-| `recommendation/engine.py` | `recommend(forecast, news, context)` | all signals → `Recommendation` |
+| `llm/summarizer.py` | `summarize(company, ticker, articles)` | top articles → `str` summary |
+| `llm/summarizer.py` | `headline_digest(company, articles)` | articles → deterministic no-LLM summary |
+| `recommendation/engine.py` | `summarize_and_recommend(company, ticker, forecast, sentiment, context, articles)` | all signals → `(summary, Recommendation)` — **one LLM call returning both** |
 | `orchestration/pipeline.py` | `analyze(ticker)` | ticker → `AnalysisResult` |
 
 Key schemas: `Article`, `ForecastResult`, `SentimentSummary`, `NewsResult`, `MarketContext`,
-`Recommendation`, `AnalysisResult`.
+`Recommendation`, `AnalysisResult`, `StrategyBacktest`, `TrackRecord`, `SymbolHit`.
 
 ---
 
@@ -122,7 +122,7 @@ Key schemas: `Article`, `ForecastResult`, `SentimentSummary`, `NewsResult`, `Mar
 - **Target:** next-day **log return** `r_t = ln(P_t / P_{t-1})`. Displayed price =
   `P_{t-1} * exp(r_hat)`. Also predict weekly / monthly horizons.
 - **Features:** lagged returns, rolling mean/std (5/10/20d), realized volatility, volume features,
-  and technical indicators (RSI, EMA, SMA, MACD, Bollinger Bands, ATR) via `pandas-ta`.
+  and technical indicators (RSI, EMA, SMA, MACD, Bollinger Bands, ATR) via the `ta` library.
 - **Models:** ARIMA (statistical baseline on the return series), XGBoost, LightGBM, CatBoost
   (gradient-boosted trees on the feature matrix), plus a **weighted ensemble** (weights ∝ inverse
   validation RMSE).
@@ -131,6 +131,21 @@ Key schemas: `Article`, `ForecastResult`, `SentimentSummary`, `NewsResult`, `Mar
   and **skill vs. the naive persistence baseline** (`r_hat = 0`, i.e. price unchanged). Reported per
   model and for the ensemble.
 - **Guardrail:** if no model beats the baseline on directional accuracy, the UI says so plainly.
+- **Prediction intervals** (`forecasting/intervals.py`): split **conformal prediction** on the
+  ensemble's holdout residuals fills `HorizonForecast.lower`/`upper`. Distribution-free, so the
+  fat tails of daily returns don't invalidate it. Calibration and coverage measurement use
+  **disjoint** slices of the holdout; when the holdout is too small to split, coverage is reported
+  as unknown rather than measured on its own calibration data. Longer horizons are widened by √t —
+  an assumption, and labelled as one.
+- **Strategy backtest** (`forecasting/strategy.py`): long when the forecast is positive, else cash,
+  over the holdout, after transaction costs, versus buy-and-hold. Answers "would following it have
+  made money?", which no statistical metric does. Tests the forecast only — the LLM verdict also
+  uses sentiment, which has no history to backtest against.
+- **Sentiment as a feature** (`technical_analysis/features.attach_sentiment`): gated on
+  `MIN_SENTIMENT_COVERAGE`. The news API serves ~4 weeks of history, so daily readings are
+  accumulated into `daily_sentiment` on every run; the feature is withheld until it covers 60% of
+  the training window, because a column that is empty for most training rows teaches nothing and
+  is out-of-distribution at inference.
 
 ---
 
@@ -208,7 +223,109 @@ and is instructed to cite only from those. A post-check verifies every cited URL
   macOS OpenMP segfault.
 - **Theme:** `visualization/theme.py` (shared Plotly template) + `.streamlit/config.toml` + `frontend/_style.py`.
 
+## 8d. v3 frontend structure
+
+The numbered `frontend/pages/` convention was replaced by **`st.navigation`**:
+
+- `frontend/app.py` is a **router**. It owns `st.set_page_config`, the stylesheet, the model
+  warm-up and the sidebar, then declares the grouped nav (Analysis / News / Decision / Discover /
+  More) with Material icons and calls `page.run()`.
+- `frontend/views/*.py` render content only and must **not** call `st.set_page_config` — they
+  execute inside the router's script run.
+- `_shared.boot()` runs once per rerun from `app.py`; `_shared.sidebar()` renders the brand,
+  market switcher, search box and watchlist.
+
+**Errors are split by audience.** `agents/base.StageError` is a `str` subclass carrying `.detail`;
+`Agent.safe_run` returns a plain-English sentence from a per-stage map while keeping the exception
+text on `.detail`. `orchestration/pipeline._Problems` routes the two into
+`AnalysisResult.errors`/`warnings` (shown) and `AnalysisResult.details` (a collapsed expander).
+
+**Symbol search.** `data_ingestion/markets.search_symbols(query, region, limit)` wraps Yahoo's
+symbol search so users can type a company name instead of a ticker. It returns `SymbolHit`s ranked
+with the selected market first, caches for 24 h, and returns `[]` on failure. Results are already
+exchange-qualified, so callers must **not** re-normalize them.
+
+**Testing note:** views are not standalone scripts under `st.navigation`. Drive `app.py` and route
+with `AppTest.switch_page("views/<name>.py")` — `query_params` is ignored, and using it makes every
+check silently render the default page instead.
+
+### Threading constraints (do not "optimize" these away)
+
+This process loads **three copies of `libomp.dylib`** and runs GBM training concurrently with
+PyTorch inference. Two settings keep that survivable, and both are stability requirements rather
+than tuning choices:
+
+- **`forecasting/models.py: _THREADS = 1`** — `n_jobs=-1` makes each GBM fork its own OpenMP
+  worker pool; those pools hit a barrier owned by a different OpenMP runtime and segfault the
+  process (`__kmp_fork_barrier`). It is also *faster* here, since the training set is tiny.
+  Note `OMP_NUM_THREADS` alone does **not** help: `n_jobs` overrides it.
+- **`device="cpu"` on FinBERT and MiniLM** — otherwise Apple Silicon selects the MPS (GPU)
+  backend, which is not safe to call from multiple threads.
+
+Both model loaders are lock-guarded: `lru_cache` alone lets the warm-up thread and a live request
+build two copies of the model at once.
+
+Reproducing threading crashes requires driving the app through `AppTest`, not calling `analyze()`
+directly — the script-runner thread is part of the trigger.
+
 All new pages read the shared `AnalysisResult` via `frontend/_shared.py`; no v1 signature changed.
+
+## 8c. v3 performance notes (no signatures changed)
+
+Profiling (`scripts/profile_run.py`) showed the LLM — not model training — dominates a run: the 21
+GBM fits + 3 ARIMA fits total ~4.5 s, while Gemini accounted for 85–95 % of wall clock. Two changes
+followed, both behind the existing interfaces:
+
+- **Quota-aware model fallback** (`llm/client.py`). A `429` is now split into two cases. A short
+  per-minute rate limit is still retried with backoff; a per-**day** free-tier quota (detected from
+  the API's own `RetryInfo.retryDelay`, or per-day wording) cannot clear inside our 5.1 s backoff
+  budget, so the model is **parked in a cooldown map and skipped** on later calls instead of being
+  retried four times per call. When every model is parked, `_run` raises `LLMUnavailable`
+  immediately so callers fall through to their deterministic path without waiting.
+- **LLM response caching** (`llm/summarizer.py`, `recommendation/engine.py`). Both cache through
+  `database/cache.py` with a 24 h TTL. Keys are built from **the inputs the LLM sees** — the article
+  set, and for the recommendation also the rounded forecast and sentiment figures — so a cached
+  answer is reused only while those are unchanged, and never survives a change in the underlying
+  numbers. Only successful LLM responses are cached; the rule-based fallback never is, so a
+  degraded answer cannot get pinned.
+
+- **One merged LLM call** (`recommendation/engine.py::summarize_and_recommend`, driven by
+  `AnalystAgent`). Summarization and recommendation were two separate Gemini calls; they are now
+  one, via `llm/prompts.py::combined_prompt` and the `CombinedDraft` schema. Two reasons:
+
+  1. **Cost.** Free tier is 20 requests/day *per model*. Halving calls doubles daily capacity.
+  2. **Consistency.** `summary_prompt` never received the FinBERT score, so the summary could
+     contradict the Sentiment page — measured: it called AAPL "Cautious/Mixed" against −0.065 and
+     MSFT "Mixed" against −0.390. The merged prompt carries both, and agreed with the score.
+
+  `CombinedDraft` declares `news_summary` **before** the verdict fields so the model writes the
+  summary first and reasons from it. `_evidence_block()` is shared by both prompts so they cannot
+  drift apart. Fallbacks are unchanged: no LLM → `headline_digest()` (now shared with
+  `summarize()`) plus the rule-based recommendation.
+
+  The old split path — `recommend()`, `RecommendationAgent` and `recommendation_prompt` — was
+  **deleted** rather than left in place, and `tests/test_pipeline_units.py` now exercises
+  `summarize_and_recommend(..., use_llm=False)` so the rule-based fallback is tested on the path
+  that actually runs. `SummarizationAgent` / `summary_prompt` remain in use: when the forecast
+  fails there is no recommendation to make, but the news is still worth summarizing.
+
+- **Forecast caching** (`forecasting/forecaster.py`). `run_forecast(prices, ticker, use_cache=True)`
+  stores its `ForecastResult` keyed on ticker + the **date of the last price bar** + a hash of the
+  training settings. Keying on the bar date rather than wall-clock time means a new trading day
+  invalidates the entry by itself, so a stale forecast can never be served as today's; the settings
+  hash means changing `min_history_rows` (or bumping `_CACHE_VERSION` when the model roster changes)
+  busts it automatically.
+
+- **Model warm-up** (`frontend/_warmup.py`, started from `_shared.setup()`). FinBERT and MiniLM load
+  in a daemon thread at app start instead of inside the first analysis. The guard is module-level,
+  not session state — the `lru_cache`d models belong to the process, not to a visitor.
+
+- **Screener fetch window** (`screener/score.py`). `quick_score` fetches 1 year rather than the full
+  `price_period`; it only needs a 3-month return and a 50-day SMA. It caches under its own key, so
+  the shorter series can never be mistaken for the training data.
+
+Grounding is unaffected: a cached `Recommendation` was already passed through `_ground()` when it
+was produced, and the merged draft is finalized through exactly the same `_finalize()`/`_ground()`.
 
 ## 9. Repository layout
 
@@ -217,9 +334,9 @@ stock-sense/
 ├── config/              # settings.py (env), logging_config.py, sources.py (RSS list, credibility weights)
 ├── data_ingestion/      # prices.py, news.py, context.py
 ├── technical_analysis/  # indicators.py, features.py
-├── forecasting/         # baseline.py, arima_model.py, gbm_models.py, ensemble.py, evaluate.py, forecaster.py
+├── forecasting/         # baseline.py, arima_model.py, models.py, ensemble.py, evaluate.py, forecaster.py
 ├── embeddings/          # encoder.py
-├── retrieval/           # dedup.py, bm25.py, semantic.py, ranker.py
+├── retrieval/           # dedup.py, ranker.py (BM25 + semantic fused)
 ├── sentiment/           # finbert.py, aggregate.py
 ├── llm/                 # client.py (LLMClient/Gemini), prompts.py, summarizer.py
 ├── recommendation/      # engine.py
@@ -227,7 +344,7 @@ stock-sense/
 ├── orchestration/       # schemas.py (pydantic), pipeline.py (the DAG)
 ├── database/            # db.py, models.py, cache.py
 ├── visualization/       # charts.py (plotly)
-├── frontend/            # app.py + pages/ (Streamlit multipage)
+├── frontend/            # app.py (st.navigation router) + views/ + _shared/_style/_warmup
 ├── utils/               # logging helpers, timing, retries
 ├── models_store/        # persisted trained models (gitignored)
 ├── data_cache/          # parquet price/news cache (gitignored)

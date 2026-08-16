@@ -71,3 +71,13 @@ def list_indices(region: str) -> list[IndexInfo]:
 
 def all_indices() -> dict[str, list[IndexInfo]]:
     return {r: list_indices(r) for r in REGIONS}
+
+
+@lru_cache(maxsize=None)
+def searchable(region: str) -> tuple[str, ...]:
+    """Every known ticker in a region, de-duplicated and sorted — for search suggestions."""
+    seen: dict[str, None] = {}
+    for info in list_indices(region):
+        for t in info.tickers:
+            seen.setdefault(t, None)
+    return tuple(sorted(seen))

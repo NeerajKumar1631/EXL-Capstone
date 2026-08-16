@@ -24,3 +24,15 @@ def test_explore_renders_for_both_regions():
         assert not at.exception, f"{region}: {at.exception}"
         # index category tiles are rendered as buttons (≥4 indices per region)
         assert len(at.button) >= 4
+
+
+def test_navigation_routes_to_a_different_view():
+    """Guards the AppTest sweep: if routing silently fell back to the default page,
+    every view check would pass while testing only the dashboard."""
+    at = AppTest.from_file(str(ROOT / "frontend" / "app.py"), default_timeout=45)
+    at.session_state["results"] = {}
+    at.session_state["region"] = "US"
+    at.switch_page("views/history.py")
+    at.run()
+    assert not at.exception, at.exception
+    assert any("Analysis History" in t.value for t in at.title), [t.value for t in at.title]

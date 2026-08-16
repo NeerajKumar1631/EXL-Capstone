@@ -50,6 +50,9 @@ streamlit>=1.38
 plotly>=5.24
 matplotlib>=3.9
 
+# ── Reports ──────────────────────────────────────────
+fpdf2>=2.7                    # PDF export; without it the PDF download button is hidden
+
 # ── Utils / tests ────────────────────────────────────
 tenacity>=9.0                 # retries
 pytest>=8.3

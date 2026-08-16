@@ -80,22 +80,24 @@ def _forecast(beats: bool, ret: float) -> ForecastResult:
 
 
 def test_rule_based_returns_valid_recommendation():
-    from recommendation.engine import recommend
+    """use_llm=False must still yield a usable verdict — the pipeline's degraded path."""
+    from recommendation.engine import summarize_and_recommend
 
     fc = _forecast(beats=False, ret=0.0)
     s = SentimentSummary(weighted_score=0.0, label="neutral", n_articles=0)
-    r = recommend("Co", "X", fc, s, MarketContext(), [], use_llm=False)
+    summary, r = summarize_and_recommend("Co", "X", fc, s, MarketContext(), [], use_llm=False)
     assert r.action in ("Buy", "Hold", "Sell")
     assert 0.0 <= r.confidence <= 1.0
     assert r.disclaimer
+    assert summary  # the headline digest, never empty
 
 
 def test_rule_based_buys_on_strong_positive_signal():
-    from recommendation.engine import recommend
+    from recommendation.engine import summarize_and_recommend
 
     fc = _forecast(beats=True, ret=0.03)
     s = SentimentSummary(weighted_score=0.7, label="positive", n_articles=5, n_positive=5)
-    r = recommend("Co", "X", fc, s, MarketContext(), [], use_llm=False)
+    _, r = summarize_and_recommend("Co", "X", fc, s, MarketContext(), [], use_llm=False)
     assert r.action == "Buy"
 
 

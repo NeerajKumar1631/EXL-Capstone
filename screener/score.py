@@ -13,6 +13,12 @@ from orchestration.schemas import ScoreCard
 from technical_analysis.indicators import compute_indicators
 
 
+# The score needs a 3-month return (63 bars) and a 50-day SMA, so one year of history is
+# ample. The main pipeline still fetches the full `price_period` for training; this shorter
+# window is cached under its own key, so the two never collide.
+_SCORE_PERIOD = "1y"
+
+
 def _clip01(x: float) -> float:
     return float(max(0.0, min(1.0, x)))
 
@@ -25,13 +31,14 @@ def _pct_change(series, lookback: int) -> float:
 
 def quick_score(ticker: str, region: str | None = None, use_cache: bool = True) -> ScoreCard:
     """Score a single ticker. Raises on unusable data (caller counts failures)."""
-    key = f"score_{ticker}"
+    key = f"score_{ticker}_{_SCORE_PERIOD}"
     if use_cache:
         cached = cache.read_json(key)
         if cached:
             return ScoreCard(**cached)
 
-    prices = fetch_prices(ticker)          # cached; raises InvalidTickerError on bad symbol
+    # cached; raises InvalidTickerError on bad symbol
+    prices = fetch_prices(ticker, period=_SCORE_PERIOD)
     close = prices["Close"]
     last = float(close.iloc[-1])
 

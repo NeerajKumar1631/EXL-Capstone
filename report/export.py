@@ -8,7 +8,29 @@ from __future__ import annotations
 import html
 from typing import Optional
 
+from config.logging_config import get_logger
 from orchestration.schemas import AnalysisResult
+
+logger = get_logger("report.export")
+
+# fpdf2's built-in fonts are latin-1 only, and these reports are full of typographic
+# characters (em dashes, curly quotes, the disclaimer's warning sign). Rather than shipping
+# a Unicode TTF just for this, fold them to ASCII equivalents before writing the PDF.
+_PDF_TRANSLITERATIONS = {
+    "—": "-", "–": "-", "−": "-",          # em/en dash, minus
+    "‘": "'", "’": "'", "“": '"', "”": '"',
+    "…": "...", "·": "-", "•": "-",         # ellipsis, middot, bullet
+    "→": "->", "≈": "~", "×": "x",
+    "⚠": "!", "️": "", "₹": "INR ", "✅": "", "❌": "",
+}
+
+
+def _pdf_safe(text: str) -> str:
+    """Make a line printable with fpdf2's built-in latin-1 fonts."""
+    for src, dst in _PDF_TRANSLITERATIONS.items():
+        text = text.replace(src, dst)
+    # Anything still outside latin-1 is dropped rather than crashing the export.
+    return text.encode("latin-1", errors="ignore").decode("latin-1")
 
 
 def to_markdown(result: AnalysisResult) -> str:
@@ -86,17 +108,28 @@ def to_html(result: AnalysisResult) -> str:
 
 
 def to_pdf(result: AnalysisResult) -> Optional[bytes]:
-    """Best-effort PDF via fpdf2; returns None if the library isn't available."""
+    """Best-effort PDF via fpdf2; returns None if it isn't installed or generation fails.
+
+    Failures are logged rather than swallowed silently — a bare `except` here previously hid
+    a real bug (an em dash in the report crashed the latin-1 core font) and the download
+    button simply never appeared.
+    """
     try:
         from fpdf import FPDF
-    except Exception:
+    except ImportError:
+        logger.info("fpdf2 not installed — PDF export unavailable")
         return None
     try:
         pdf = FPDF()
+        pdf.set_auto_page_break(auto=True, margin=15)
         pdf.add_page()
         pdf.set_font("Helvetica", size=11)
         for line in to_markdown(result).replace("#", "").splitlines():
-            pdf.multi_cell(0, 6, line[:110])
+            text = _pdf_safe(line[:110]).rstrip()
+            # new_x/new_y return the cursor to the left margin; without them fpdf2 leaves it
+            # at the right edge and the next call fails with "not enough horizontal space".
+            pdf.multi_cell(0, 6, text or " ", new_x="LMARGIN", new_y="NEXT")
         return bytes(pdf.output())
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - export must never break the page
+        logger.warning("PDF export failed: %s: %s", type(exc).__name__, exc)
         return None

@@ -95,6 +95,23 @@ class ModelForecast(BaseModel):
         return self.horizons[0] if self.horizons else None
 
 
+class StrategyBacktest(BaseModel):
+    """'Follow the forecast' vs buy-and-hold over the held-out window."""
+
+    n_days: int
+    strategy_return: float                # total, over the window
+    buy_hold_return: float
+    excess_return: float                  # strategy - buy_and_hold
+    strategy_annualised: Optional[float] = None
+    buy_hold_annualised: Optional[float] = None
+    days_in_market: int = 0
+    trades: int = 0
+    cost_bps: float = 0.0
+    win_rate: Optional[float] = None      # of the days it was long, how many rose
+    beat_buy_and_hold: bool = False
+    notes: list[str] = Field(default_factory=list)
+
+
 class ForecastResult(BaseModel):
     ticker: str
     last_close: float
@@ -104,6 +121,12 @@ class ForecastResult(BaseModel):
     baseline_metrics: ModelMetrics        # naive persistence baseline
     beats_baseline: bool
     best_model: str
+    # Prediction intervals (split conformal). `interval_coverage` is measured on data not
+    # used to set the width; None means the holdout was too small to check honestly.
+    interval_level: float = 0.0           # e.g. 0.80 for an 80% interval; 0 = unavailable
+    interval_coverage: Optional[float] = None
+    interval_n_calibration: int = 0
+    strategy: Optional[StrategyBacktest] = None
     # backtest arrays for the "actual vs predicted" chart
     backtest_dates: list[str] = Field(default_factory=list)
     backtest_actual: list[float] = Field(default_factory=list)
@@ -145,6 +168,60 @@ class RiskProfile(BaseModel):
     drawdown_dates: list[str] = Field(default_factory=list)
     drawdown_series: list[float] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
+
+
+# ── Track record ──────────────────────────────────────────────────────
+class GradedRun(BaseModel):
+    """One past prediction, checked against what the price actually did."""
+
+    ticker: str
+    company: str = ""
+    when: str
+    action: str
+    confidence: float = 0.0
+    last_close: float
+    predicted_price: float
+    actual_price: float
+    predicted_return: float               # fraction, e.g. +0.004
+    actual_return: float
+    direction_correct: bool
+    abs_pct_error: float                  # |predicted - actual| / actual
+
+
+class TrackRecord(BaseModel):
+    """How the saved predictions have actually performed.
+
+    `pending` and `unverifiable` are reported rather than hidden: a prediction whose next
+    trading day has not happened yet is not a miss, and one we cannot line up against a
+    price bar must not be silently counted either way.
+    """
+
+    graded: list[GradedRun] = Field(default_factory=list)
+    total_runs: int = 0
+    pending: int = 0                      # next trading day has not happened yet
+    unverifiable: int = 0                 # could not match the run to a price bar
+    n_graded: int = 0
+    n_correct: int = 0
+    hit_rate: Optional[float] = None      # None until at least one run is graded
+    mean_abs_pct_error: Optional[float] = None
+    notes: list[str] = Field(default_factory=list)
+
+
+# ── Symbol search ─────────────────────────────────────────────────────
+class SymbolHit(BaseModel):
+    """One match from a symbol-or-company-name search."""
+
+    symbol: str
+    name: str = ""
+    exchange: str = ""
+    in_region: bool = False               # matches the user's currently selected market
+
+    @property
+    def label(self) -> str:
+        """Human-readable option text, e.g. 'Apple Inc. — AAPL (NASDAQ)'."""
+        bits = self.name or self.symbol
+        suffix = f" ({self.exchange})" if self.exchange else ""
+        return f"{bits} — {self.symbol}{suffix}"
 
 
 # ── Screener ──────────────────────────────────────────────────────────
@@ -225,5 +302,8 @@ class AnalysisResult(BaseModel):
     recommendation: Optional[Recommendation] = None
     risk: Optional[RiskProfile] = None         # v2: risk & history metrics
     prices: Optional[pd.DataFrame] = None      # OHLCV history for charts
+    # `errors`/`warnings` are plain-English and shown to the user; `details` carries the
+    # matching technical text (exception type + message) for a collapsed debug view.
     errors: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    details: list[str] = Field(default_factory=list)

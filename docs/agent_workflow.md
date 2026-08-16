@@ -22,10 +22,10 @@ sequenceDiagram
     end
     par concurrent compute
         O->>F: features → ARIMA+GBMs → ensemble → metrics vs baseline
-        O->>R: dedup → BM25/MiniLM rank → FinBERT → aggregate → Gemini summary
+        O->>R: dedup → BM25/MiniLM rank → FinBERT → aggregate
     end
-    O->>Rec: fuse(forecast, sentiment, context, articles)
-    Rec-->>O: Buy/Hold/Sell + thesis + factors (grounded) OR rule-based fallback
+    O->>Rec: analyst(forecast, sentiment, context, articles) — ONE Gemini call
+    Rec-->>O: news summary + Buy/Hold/Sell + thesis + factors (grounded) OR fallbacks
     O-->>U: AnalysisResult
 ```
 
@@ -39,9 +39,14 @@ sequenceDiagram
 | Dedup | `retrieval/dedup.py` | articles → deduped articles |
 | Retrieval | `retrieval/ranker.py` | query, articles, k → top-k ranked |
 | Sentiment | `sentiment/{finbert,aggregate}.py` | articles → scored articles + `SentimentSummary` |
-| Summarization | `llm/summarizer.py` | articles → summary text |
 | Context | `data_ingestion/context.py` | ticker → `MarketContext` |
-| Recommendation | `recommendation/engine.py` | all signals → `Recommendation` |
+| **Analyst** | `recommendation/engine.py::summarize_and_recommend` | all signals → **(summary, `Recommendation`)** in one Gemini call |
+| Summarization | `llm/summarizer.py` | articles → summary text — used only when there is no forecast |
+
+**Why one call.** Summarization and recommendation used to be two Gemini requests. Free tier allows
+20 requests/day *per model*, so merging doubles daily capacity. It also fixed a real inconsistency:
+`summary_prompt` never saw the FinBERT score, so the summary could contradict the Sentiment page
+(measured: "Mixed" against a −0.390 score). The merged prompt carries both and agrees with it.
 
 ## Conversational analyst (v2)
 

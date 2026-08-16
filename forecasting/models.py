@@ -43,13 +43,26 @@ class RegressorModel:
         return {c: float(v) for c, v in zip(columns, arr)}
 
 
+# Single-threaded on purpose — this is a stability fix, not a tuning choice.
+#
+# The pipeline trains these while FinBERT/MiniLM run in another thread. With n_jobs=-1 each
+# library calls omp_set_num_threads() itself (which overrides OMP_NUM_THREADS) and forks an
+# OpenMP worker pool. Three separate copies of libomp.dylib are loaded in this process, and
+# the resulting barrier collides — the process dies with SIGSEGV in `__kmp_fork_barrier`,
+# confirmed from macOS crash reports naming lib_lightgbm.dylib + libomp.dylib.
+#
+# No worker pool means no barrier. It also costs nothing measurable: the training set is
+# ~450 rows x 28 features, where thread coordination outweighs any parallel gain.
+_THREADS = 1
+
+
 def _xgb() -> object:
     from xgboost import XGBRegressor
 
     return XGBRegressor(
         n_estimators=300, max_depth=4, learning_rate=0.03,
         subsample=0.8, colsample_bytree=0.8, reg_lambda=1.0,
-        n_jobs=-1, random_state=42, verbosity=0,
+        n_jobs=_THREADS, random_state=42, verbosity=0,
     )
 
 
@@ -59,7 +72,7 @@ def _lgbm() -> object:
     return LGBMRegressor(
         n_estimators=300, max_depth=4, num_leaves=15, learning_rate=0.03,
         subsample=0.8, colsample_bytree=0.8, reg_lambda=1.0,
-        n_jobs=-1, random_state=42, verbose=-1,
+        n_jobs=_THREADS, random_state=42, verbose=-1,
     )
 
 
@@ -69,6 +82,7 @@ def _catboost() -> object:
     return CatBoostRegressor(
         iterations=300, depth=4, learning_rate=0.03, l2_leaf_reg=3.0,
         random_seed=42, verbose=0, allow_writing_files=False,
+        thread_count=_THREADS,
     )
 
 

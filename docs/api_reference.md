@@ -19,14 +19,17 @@ Runs the full DAG. `use_llm=False` forces the rule-based recommendation. `progre
 | `data_ingestion.prices.fetch_prices` | `(ticker, period=None, interval=None, use_cache=True)` | OHLCV `DataFrame` |
 | `data_ingestion.news.fetch_news` | `(ticker, company, days=None, max_articles=None)` | `list[Article]` |
 | `data_ingestion.context.fetch_context` | `(ticker)` | `MarketContext` |
+| `data_ingestion.markets.search_symbols` | `(query, region="US", limit=8)` | `list[SymbolHit]` — search by ticker **or company name** |
+| `analytics.track_record.evaluate` | `(limit=500)` | `TrackRecord` — past predictions graded against real prices |
 | `technical_analysis.features.training_frame` | `(prices)` | `(X, y, feats, cols)` |
-| `forecasting.forecaster.run_forecast` | `(prices, ticker)` | `ForecastResult` |
+| `forecasting.forecaster.run_forecast` | `(prices, ticker, use_cache=True)` | `ForecastResult` (cached per ticker + last bar date) |
 | `retrieval.dedup.deduplicate` | `(articles, threshold=88)` | `list[Article]` |
 | `retrieval.ranker.rank` | `(query, articles, top_k, alpha=0.6)` | top-k `list[Article]` |
 | `sentiment.finbert.score` | `(articles)` | scored `list[Article]` |
 | `sentiment.aggregate.aggregate` | `(articles)` | `SentimentSummary` |
 | `llm.summarizer.summarize` | `(company, ticker, articles, use_llm=True)` | `str` |
-| `recommendation.engine.recommend` | `(company, ticker, forecast, sentiment, context, articles, use_llm=True)` | `Recommendation` |
+| `llm.summarizer.headline_digest` | `(company, articles)` | `str` — deterministic, no LLM |
+| `recommendation.engine.summarize_and_recommend` | `(company, ticker, forecast, sentiment, context, articles, use_llm=True)` | `(str, Recommendation)` — one Gemini call returning both |
 
 ## Schemas (`orchestration/schemas.py`)
 `Article`, `SentimentSummary`, `NewsResult`, `ModelMetrics`, `HorizonForecast`, `ModelForecast`,

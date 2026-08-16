@@ -6,14 +6,17 @@ forecast signal and weighted sentiment, so the app ALWAYS returns a recommendati
 """
 from __future__ import annotations
 
+import hashlib
 import math
 import re
 
 from pydantic import BaseModel, Field
 
 from config.logging_config import get_logger
+from database import cache
 from llm.client import LLMUnavailable, get_llm
-from llm.prompts import recommendation_prompt
+from llm.prompts import combined_prompt
+from llm.summarizer import headline_digest
 from orchestration.schemas import (
     Action,
     Article,
@@ -27,11 +30,52 @@ from orchestration.schemas import (
 logger = get_logger("recommendation")
 
 _URL_RE = re.compile(r"https?://\S+")
+_CACHE_TTL_MINUTES = 24 * 60
+
+
+def _cache_key(ticker: str, forecast: ForecastResult, sentiment: SentimentSummary,
+               articles: list[Article], prefix: str = "llm_reco") -> str:
+    """Key on the signals the LLM actually sees, so a cached call is only reused when
+    the forecast, the sentiment and the article set are all effectively unchanged.
+
+    Values are rounded rather than exact: gradient-boosted fits can wobble in the last
+    few decimal places across threads, and that should not cause a cache miss.
+    """
+    nd = forecast.ensemble.next_day
+    metrics = forecast.ensemble.metrics
+    parts = [
+        ticker,
+        f"{nd.predicted_return:.4f}" if nd else "na",
+        str(forecast.beats_baseline),
+        f"{metrics.directional_accuracy:.3f}" if metrics else "na",
+        f"{sentiment.weighted_score:.3f}",
+        sentiment.label,
+        "|".join(sorted(a.url for a in articles if a.url)),
+    ]
+    digest = hashlib.sha1("::".join(parts).encode("utf-8")).hexdigest()[:16]
+    return f"{prefix}_{ticker}_{digest}"
 
 
 class RecommendationDraft(BaseModel):
     """LLM response schema (disclaimer is added by us, not the model)."""
 
+    action: Action
+    confidence: float = Field(ge=0.0, le=1.0)
+    thesis: str
+    positive_factors: list[str] = Field(default_factory=list)
+    negative_factors: list[str] = Field(default_factory=list)
+    risks: list[str] = Field(default_factory=list)
+    opportunities: list[str] = Field(default_factory=list)
+
+
+class CombinedDraft(BaseModel):
+    """One response carrying both the news summary and the recommendation.
+
+    `news_summary` is declared first on purpose: the model writes the summary before it
+    commits to a verdict, so the decision follows the evidence rather than preceding it.
+    """
+
+    news_summary: str
     action: Action
     confidence: float = Field(ge=0.0, le=1.0)
     thesis: str
@@ -110,7 +154,7 @@ def _rule_based(forecast: ForecastResult, sentiment: SentimentSummary) -> Recomm
     )
 
 
-def recommend(
+def summarize_and_recommend(
     company: str,
     ticker: str,
     forecast: ForecastResult,
@@ -118,14 +162,35 @@ def recommend(
     context: MarketContext,
     articles: list[Article],
     use_llm: bool = True,
-) -> Recommendation:
-    """Produce a grounded Buy/Hold/Sell (LLM primary, rule-based fallback)."""
+) -> tuple[str, Recommendation]:
+    """Produce the news summary AND the recommendation in a single Gemini call.
+
+    Halves request usage versus two separate calls — which matters on a free tier, where the
+    limit is 20 requests/day per model — and keeps the summary consistent with the sentiment
+    score, because this prompt sees both. On failure it degrades to a headline digest plus the
+    rule-based recommendation, so a caller always gets both values.
+    """
     llm = get_llm()
     if use_llm and llm.available:
+        key = _cache_key(ticker, forecast, sentiment, articles, prefix="llm_analyst")
+        cached = cache.read_json(key, ttl_minutes=_CACHE_TTL_MINUTES)
+        if isinstance(cached, dict) and cached.get("summary") and cached.get("recommendation"):
+            try:
+                logger.info("analyst output for %s served from cache", ticker)
+                return str(cached["summary"]), Recommendation(**cached["recommendation"])
+            except Exception:  # noqa: BLE001 - a stale/incompatible entry just regenerates
+                logger.warning("cached analyst output for %s was unusable; regenerating", ticker)
         try:
-            prompt = recommendation_prompt(company, ticker, forecast, sentiment, context, articles)
-            draft = llm.generate_json(prompt, RecommendationDraft)
-            return _finalize(draft, articles)
+            prompt = combined_prompt(company, ticker, forecast, sentiment, context, articles)
+            draft = llm.generate_json(prompt, CombinedDraft)
+            reco = _finalize(
+                RecommendationDraft(**draft.model_dump(exclude={"news_summary"})), articles
+            )
+            summary = draft.news_summary.strip() or headline_digest(company, articles)
+            cache.write_json(key, {"summary": summary,
+                                   "recommendation": reco.model_dump(mode="json")})
+            return summary, reco
         except LLMUnavailable as exc:
-            logger.warning("recommendation LLM unavailable, using rule-based: %s", exc)
-    return _rule_based(forecast, sentiment)
+            logger.warning("analyst LLM unavailable, using fallbacks: %s", exc)
+
+    return headline_digest(company, articles), _rule_based(forecast, sentiment)

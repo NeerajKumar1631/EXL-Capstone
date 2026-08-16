@@ -8,6 +8,33 @@ import pandas as pd
 import pytest
 
 
+@pytest.fixture(scope="session", autouse=True)
+def isolated_storage(tmp_path_factory):
+    """Point the database and disk cache at a throwaway directory for the whole run.
+
+    Without this the suite writes into the real `data_cache/stocksense.db`: the watchlist
+    tests add and remove rows there, and `test_pipeline_dag` analyzes a ticker named "TEST",
+    which now records a sentiment reading. Tests must not leave data in a user's database.
+
+    pytest manages the directory and removes old ones automatically (it keeps the last few
+    runs), so nothing accumulates.
+    """
+    from config.settings import settings
+    from database import db
+
+    sandbox = tmp_path_factory.mktemp("stocksense_test_storage")
+    saved = (settings.cache_dir, settings.db_path)
+    settings.cache_dir = sandbox
+    settings.db_path = sandbox / "stocksense.db"
+    settings.ensure_dirs()
+    db._session_factory.cache_clear()      # it caches an engine bound to the old path
+    try:
+        yield sandbox
+    finally:
+        settings.cache_dir, settings.db_path = saved
+        db._session_factory.cache_clear()
+
+
 @pytest.fixture
 def synth_prices():
     """A deterministic synthetic OHLCV series with enough rows for feature windows."""

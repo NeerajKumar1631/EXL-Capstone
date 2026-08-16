@@ -14,7 +14,7 @@ from data_ingestion.news import fetch_news
 from data_ingestion.prices import fetch_prices
 from forecasting.forecaster import run_forecast
 from llm.summarizer import summarize
-from recommendation.engine import recommend
+from recommendation.engine import summarize_and_recommend
 from retrieval.dedup import deduplicate
 from retrieval.ranker import rank
 from sentiment.aggregate import aggregate
@@ -93,8 +93,10 @@ class ContextAgent(Agent):
         return fetch_context(ticker)
 
 
-class RecommendationAgent(Agent):
-    name = "recommendation"
+class AnalystAgent(Agent):
+    """News summary + recommendation from one LLM call (half the requests)."""
+
+    name = "analyst"
 
     def _run(
         self,
@@ -105,5 +107,7 @@ class RecommendationAgent(Agent):
         context: MarketContext,
         articles: list[Article],
         use_llm: bool = True,
-    ) -> Recommendation:
-        return recommend(company, ticker, forecast, sentiment, context, articles, use_llm=use_llm)
+    ) -> tuple[str, Recommendation]:
+        return summarize_and_recommend(
+            company, ticker, forecast, sentiment, context, articles, use_llm=use_llm
+        )

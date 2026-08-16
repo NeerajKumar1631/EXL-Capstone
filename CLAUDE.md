@@ -42,7 +42,7 @@ Context/fusion → Dashboard → Hardening/docs.
 
 - Python **3.13** venv at `.venv/` (activate before running anything).
 - Run the app: `streamlit run frontend/app.py`.
-- Config via `.env` (see `.env.example`). Keys currently provisioned: `NEWSAPI_KEY`, `GEMINI_API_KEY`.
+- Config via `.env` (see `.env.example`). Keys currently provisioned: `NEWS_API_KEY`, `GEMINI_API_KEY`.
 - CPU-only; no GPU required (FinBERT + MiniLM run on CPU).
 
 ## Conventions

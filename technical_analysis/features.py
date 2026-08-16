@@ -19,12 +19,48 @@ LAGS = (1, 2, 3, 5, 10)
 ROLL_WINDOWS = (5, 10, 20)
 TARGET = "target"
 
+SENTIMENT_COL = "sentiment"
+# A sentiment feature is only worth adding if it is actually present across the training
+# window. Below this share of rows the column is mostly zeros at training time and non-zero
+# at inference — the model would learn nothing from it and then be handed an input unlike
+# anything it saw. Refusing is the honest option.
+MIN_SENTIMENT_COVERAGE = 0.60
 
-def build_features(prices: pd.DataFrame) -> pd.DataFrame:
+
+def sentiment_coverage(index: pd.Index, history: dict[str, float]) -> float:
+    """Fraction of the given trading days for which a sentiment reading exists."""
+    if len(index) == 0:
+        return 0.0
+    days = {pd.Timestamp(d).strftime("%Y-%m-%d") for d in index}
+    return len(days & set(history)) / len(days)
+
+
+def attach_sentiment(df: pd.DataFrame, history: dict[str, float]) -> bool:
+    """Add a `sentiment` column in place if coverage is sufficient. Returns whether it was added.
+
+    The news API only serves ~4 weeks of history, so this is populated from readings the app
+    has accumulated itself (`database.db.sentiment_history`). Until enough days exist, the
+    column is deliberately **not** created: a feature that is zero for 95% of training rows
+    teaches the model nothing and would be a lie dressed as a signal.
+    """
+    if not history or sentiment_coverage(df.index, history) < MIN_SENTIMENT_COVERAGE:
+        return False
+    days = pd.Index([pd.Timestamp(d).strftime("%Y-%m-%d") for d in df.index])
+    values = pd.Series([history.get(d, np.nan) for d in days], index=df.index, dtype=float)
+    # Carry the last known reading forward across gaps (weekends, days with no news), then
+    # treat any remaining leading gap as neutral.
+    df[SENTIMENT_COL] = values.ffill().fillna(0.0)
+    return True
+
+
+def build_features(prices: pd.DataFrame, sentiment: dict[str, float] | None = None) -> pd.DataFrame:
     """Return a DataFrame with engineered features, the raw indicators, and `target`.
 
     The last row has a NaN target (its next-day return is unknown) and is used for
     inference. Callers should drop NaN-target rows for training.
+
+    `sentiment` is an optional {'YYYY-MM-DD': score} history. It becomes a model feature only
+    when it covers enough of the window — see `attach_sentiment`.
     """
     df = prices.copy()
     close = df["Close"]
@@ -69,6 +105,10 @@ def build_features(prices: pd.DataFrame) -> pd.DataFrame:
     df["bb_width_rel"] = ind["bb_width"] / 100.0
     df["atr_rel"] = ind["atr_14"] / close
 
+    # Optional sentiment feature (only if we have accumulated enough history)
+    if sentiment:
+        attach_sentiment(df, sentiment)
+
     # Supervised target: NEXT-day log return
     df[TARGET] = df["log_ret"].shift(-1)
 
@@ -82,6 +122,7 @@ def feature_columns(df: pd.DataFrame) -> list[str]:
         "vol_20", "vol_chg", "vol_ratio_20", "hl_range", "co_range",
         "close_sma20", "close_sma50", "close_ema12", "ema_ratio",
         "macd_diff_rel", "rsi_norm", "bb_pctb", "bb_width_rel", "atr_rel",
+        SENTIMENT_COL,      # present only when coverage passed the threshold
     ]
     return [c for c in cols if c in df.columns]
 

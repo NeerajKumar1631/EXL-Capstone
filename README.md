@@ -44,7 +44,34 @@ forecasting** + **news sentiment** + **agentic LLM reasoning**, and — cruciall
   ("How risky is Tesla?", "Compare AAPL and MSFT", "Top Nifty 50 names") by calling the real analysis
   tools, grounded in actual data, with a deterministic **fallback** if the LLM is unavailable.
 
-Pages: **Dashboard · Forecast · Technical · News · Sentiment · Recommendation · Risk · Screener · Compare · Ask · History.**
+## What's new in v3
+
+Same idea, made faster and turned into a product.
+
+- **A repeat analysis takes ~2 seconds instead of ~81**, and costs **zero API requests**. Profiling
+  showed the LLM — not model training — was 85–95% of the wait, so the forecast, the news summary
+  and the recommendation are all cached, keyed on the inputs that produced them.
+- **One Gemini call per analysis instead of two.** The summary and the recommendation now come from
+  a single prompt. That halves usage against the free tier's 20 requests/day/model, and fixed a real
+  inconsistency: the old summary never saw the sentiment score, so it could call the news "Mixed"
+  while FinBERT said −0.39. It now agrees with the number.
+- **Quota-aware LLM fallback.** A per-minute rate limit is retried; a per-*day* quota parks that
+  model and skips it, instead of burning ~5s of doomed retries on every later call.
+- **Search by company name** — type "apple" or "tata" instead of knowing the ticker. Covers every
+  listed company via Yahoo symbol search, ranking your selected market first.
+- **Track Record** — grades the app's own past predictions against what prices actually did.
+  Pending and unverifiable runs are reported separately, never counted as hits or misses.
+- **Watchlist page** — saved stocks as cards with their latest verdict, not just sidebar buttons.
+- **Grouped navigation**, real branding, no emoji, and errors in plain English
+  ("We couldn't load recent news…") with the technical detail behind a *Technical details* expander.
+- **PDF export**, alongside Markdown and HTML.
+- **Fixed a hard crash.** The app segfaulted mid-analysis on macOS — GBM training and PyTorch each
+  forking OpenMP worker pools across threads, with three copies of `libomp.dylib` in one process.
+  See *Troubleshooting*.
+
+Pages: **Dashboard · Forecast · Technical** (Analysis) · **News · Sentiment** (News) ·
+**Recommendation · Risk** (Decision) · **Screener · Compare · Watchlist** (Discover) ·
+**Ask · Track Record · History** (More).
 
 ## Architecture
 
@@ -90,8 +117,10 @@ concurrently; each stage degrades gracefully (a failure becomes a warning, not a
 | Retrieval | `rank_bm25` + cosine |
 | LLM | Gemini via `google-genai` (`gemini-flash-latest` + fallbacks) |
 | Chat agent | `langchain` + `langchain-google-genai` (tool-calling) + rule-based fallback |
+| Symbol search | `yfinance` symbol search (search by company name, not just ticker) |
 | Storage | SQLite (SQLAlchemy) + parquet cache |
-| UI | Streamlit + Plotly |
+| Reports | Markdown / HTML built in · PDF via `fpdf2` |
+| UI | Streamlit (`st.navigation`) + Plotly |
 
 ---
 
@@ -112,13 +141,14 @@ stock-sense/
 ├── orchestration/     schemas.py (pydantic contracts), pipeline.py (the DAG)
 ├── database/          cache.py (parquet), db.py + models.py (SQLite)
 ├── visualization/     charts.py (Plotly) + theme.py (shared template)
-├── analytics/         risk.py (v2: risk & history)
+├── analytics/         risk.py (v2), track_record.py (v3: grades past predictions)
 ├── screener/          score.py, screener.py (v2: leaderboard)
 ├── compare/           compare.py (v2: side-by-side)
-├── report/            export.py (v2: markdown/html report)
+├── report/            export.py (markdown / html / pdf)
 ├── chat/              tools.py, agent.py (v2: LangChain conversational analyst)
 ├── config/universe.py + data/universe/*.json  (v2: US/India index constituents)
-├── frontend/          app.py + pages/ (Streamlit multipage) + _style.py + .streamlit/config.toml
+├── frontend/          app.py (st.navigation router) + views/ (13 pages)
+│                      + _shared.py, _style.py, _warmup.py + .streamlit/config.toml
 ├── tests/             pytest
 ├── docs/              agent_workflow · database_schema · api_reference · development_guide
 ├── architecture.md · plan.md · CLAUDE.md · requirements.txt · .env(.example)
@@ -177,7 +207,8 @@ This environment has two known bugs; both are handled/documented:
 ## Database
 
 SQLite is created automatically at `data_cache/stocksense.db` on first run; each analysis is persisted to
-a `runs` table (see the **History** page and `docs/database_schema.md`). No setup needed.
+a `runs` table (see the **History** and **Track Record** pages, and `docs/database_schema.md`), plus a
+`watchlist` table. No setup needed.
 
 ---
 
@@ -197,8 +228,11 @@ a `runs` table (see the **History** page and `docs/database_schema.md`). No setu
 | `libxgboost.dylib`/`lib_lightgbm.dylib` won't load | `brew install libomp`. |
 | "No price data for TICKER" | Bad symbol; use US like `AAPL` or NSE like `TCS.NS`. |
 | Recommendation says "rule-based" | No/invalid Gemini key, or free-tier quota (429) — add/rotate a key. |
-| First analysis is slow (~30 s) | One-time FinBERT/MiniLM download; subsequent runs are fast. |
+| First analysis is slow (~30 s) | One-time FinBERT/MiniLM download; subsequent runs are fast. Models are then warmed at app start (`frontend/_warmup.py`). |
 | Segfault when opening the Ask page | OpenMP conflict — `langchain-google-genai` must load after `xgboost`. Handled in `chat/agent.py` (imports xgboost first); don't import LangChain before the ML libs. |
+| **"Python quit unexpectedly" during an analysis** | OpenMP again, and the important one. Three copies of `libomp.dylib` are loaded here; with `n_jobs=-1` each GBM forks its own worker pool, and those collide with PyTorch's while the forecast and FinBERT run in parallel threads — `SIGSEGV` in `__kmp_fork_barrier`. **Fixed** by `forecasting/models.py: _THREADS = 1` and `device="cpu"` on both models. **Do not set `n_jobs=-1` again** — `OMP_NUM_THREADS` does *not* override it, and accuracy is identical either way. |
+| Hundreds of `No module named 'torchvision'` tracebacks | Harmless. Streamlit's file watcher walks every loaded module, and `transformers`' lazy imports pull in vision code. `./run.sh` disables the watcher; use `STOCKSENSE_DEV=1 ./run.sh` if you want hot-reload while editing. |
+| PDF download button missing | `fpdf2` isn't installed (`pip install fpdf2`). The button hides itself rather than erroring; check the log for "PDF export failed". |
 | **"Python quit unexpectedly" while clicking around** | pyarrow's bundled **mimalloc** allocator segfaults in `mi_thread_init` when Streamlit converts a DataFrame to Arrow in its script-runner thread. **Fix:** force the system allocator via `ARROW_DEFAULT_MEMORY_POOL=system` — set automatically at startup by the venv `.pth`, or just launch with **`./run.sh`**. |
 
 ## Deployment
@@ -210,15 +244,67 @@ libgomp1`, `pip install -r requirements.txt`, and set env vars — a Dockerfile 
 ## Testing
 
 ```bash
-.venv/bin/python -m pytest tests/ -q
+export ARROW_DEFAULT_MEMORY_POOL=system
+.venv/bin/python -m pytest tests/ -q                                   # 67 unit tests
+PYTHONPATH=.:frontend .venv/bin/python scripts/apptest_all_pages.py    # all 13 views render
+PYTHONPATH=. .venv/bin/python scripts/integration_e2e.py               # 12 live cross-feature checks
+PYTHONPATH=. .venv/bin/python scripts/profile_run.py --no-llm          # stage-by-stage timings
 ```
-Covers no-look-ahead feature construction, metric/skill correctness, dedup, credibility-weighted
-sentiment, Event Registry parsing (mocked), grounding, and the rule-based fallback.
+
+Unit tests cover no-look-ahead feature construction, metric/skill correctness, dedup,
+credibility-weighted sentiment, Event Registry parsing (mocked), grounding, the rule-based
+fallback, risk maths, the universe data, screener/compare logic, report export (incl. PDF),
+symbol search, the chat fallback router, and the track-record scorer.
+
+Two notes: `tests/test_watchlist.py` writes to the real `data_cache/stocksense.db` (sentinel
+ticker, cleaned up in a `finally`), and the view sweep asserts each page's **title** — routing
+under `st.navigation` can otherwise fall back to the default page and make every check pass
+while testing nothing.
+
+## Honesty features
+
+Three things most stock predictors leave out, because they make the numbers look worse.
+
+**Every forecast carries a range, not just a number.** Split conformal prediction gives an 80%
+interval that assumes nothing about the shape of the residuals — daily returns have fat tails
+that break the usual Gaussian assumption. Critically, the width is calibrated on one slice of
+held-out data and its **coverage measured on a different slice**, so the reported accuracy of the
+interval isn't measured on the data that produced it. If the holdout is too small to split, the
+app says coverage is unknown rather than quoting a number that is true by construction.
+
+**It backtests itself as a trading rule.** "Go long when the model predicts a rise, else hold
+cash", over the held-out window, after transaction costs — against simply owning the stock. The
+results are genuinely mixed (it beats buy-and-hold on some stocks and loses on others), and the
+app reports the losses as prominently as the wins.
+
+**It refuses to pretend sentiment is a model input.** The news API only serves ~4 weeks of
+history, so there is no historical sentiment to train on. Rather than adding a feature that would
+be empty for 95% of training rows, the app accumulates a daily reading on every run and enables
+the feature only once it covers 60% of the training window — telling you which is the case.
+
+## Known gaps
+
+Stated plainly rather than buried — see `plan.md` for detail.
+
+- **Sentiment is not yet a model input.** It shapes the LLM's verdict, not the ML forecast. The
+  infrastructure is in place and it switches on by itself once enough daily readings accumulate.
+- **Single-stock models, one holdout window.** Each ticker trains on ~450 rows, evaluated on one
+  30-day window. Pooling across an index and rolling the evaluation would both be more honest —
+  this, not "more rows", is the real version of the "more data helps" argument.
+- **The strategy backtest window is ~30 days.** That is an illustration, not evidence.
+- **Sentiment has no time decay** — a 14-day-old article counts as much as this morning's.
+- **No historical news**, so sentiment cannot be backtested; and the bundled index lists are
+  today's constituents, so any backtest over them carries survivorship bias.
+- **The LLM verdict itself is not backtested** — only the price forecast is.
+- **Not production-hardened:** no auth, no rate limiting, SQLite (single writer), no CI, and
+  `requirements.txt` pins only lower bounds, so the environment isn't reproducible from it alone.
+- No direct tests for `visualization/`, `embeddings/`, `screener/score.py`, `data_ingestion/prices.py`.
 
 ## Future improvements
 
-Multi-modal chart reasoning, FRED macro (needs a key), portfolio optimization (Markowitz), model
-persistence + Docker, and broader news sources. See `plan.md`.
+Sentiment as a real model feature, conformal/quantile confidence intervals, backtesting the
+recommendation itself, FRED macro (needs a key), portfolio optimization (Markowitz), Docker +
+Postgres, and broader news sources. See `plan.md`.
 
 ## Team
 

@@ -6,6 +6,7 @@ score per article: +confidence (positive), −confidence (negative), 0 (neutral)
 from __future__ import annotations
 
 import os
+import threading
 import warnings
 from functools import lru_cache
 
@@ -16,19 +17,40 @@ from orchestration.schemas import Article
 logger = get_logger("sentiment.finbert")
 
 _MODEL = "ProsusAI/finbert"
+_LOAD_LOCK = threading.Lock()
 
 
 @lru_cache(maxsize=1)
-def get_finbert():
-    """Load FinBERT once (≈400 MB, ≈50 s first run, then cached on disk)."""
+def _build_finbert():
+    """Load FinBERT (≈400 MB, ≈50 s first run, then cached on disk)."""
     if settings.hf_token:
         os.environ.setdefault("HF_TOKEN", settings.hf_token)
     from transformers import pipeline
 
-    logger.info("loading %s", _MODEL)
+    logger.info("loading %s on CPU", _MODEL)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        return pipeline("sentiment-analysis", model=_MODEL, truncation=True, max_length=512)
+        # device="cpu" is required, not a preference — see embeddings/encoder.py. On Apple
+        # Silicon transformers otherwise picks the MPS (GPU) backend, which is unsafe to
+        # call from several threads at once and crashed the process. CPU is also what the
+        # project documents.
+        return pipeline("sentiment-analysis", model=_MODEL, truncation=True,
+                        max_length=512, device="cpu")
+
+
+def get_finbert():
+    """Return the shared FinBERT pipeline, loading it at most once.
+
+    Guarded for the same reason as the encoder: the warm-up thread and a live request can
+    otherwise both miss the `lru_cache` and load a second copy at the same time.
+    """
+    with _LOAD_LOCK:
+        return _build_finbert()
+
+
+def is_loaded() -> bool:
+    """True once the model is resident in memory."""
+    return _build_finbert.cache_info().currsize > 0
 
 
 def score(articles: list[Article]) -> list[Article]:

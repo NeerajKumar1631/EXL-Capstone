@@ -12,6 +12,7 @@ Returns a fully-populated `ForecastResult`.
 """
 from __future__ import annotations
 
+import hashlib
 import warnings
 from datetime import datetime
 
@@ -22,21 +23,52 @@ from sklearn.model_selection import TimeSeriesSplit
 
 from config.logging_config import get_logger
 from config.settings import settings
+from database import cache
 from forecasting import arima_model
 from forecasting.baseline import baseline_return_predictions, up_fraction
 from forecasting.ensemble import inverse_rmse_weights, weighted_average, weighted_scalar
 from forecasting.evaluate import make_metrics
+from forecasting.intervals import DEFAULT_LEVEL, calibrate, scale_for_horizon
 from forecasting.models import build_gbm_models
+from forecasting.strategy import backtest as strategy_backtest
 from orchestration.schemas import ForecastResult, HorizonForecast, ModelForecast
-from technical_analysis.features import TARGET, build_features, feature_columns
+from technical_analysis.features import (
+    SENTIMENT_COL,
+    TARGET,
+    build_features,
+    feature_columns,
+)
 
 logger = get_logger("forecast")
 
 HORIZONS: list[tuple[str, int]] = [("1d", 1), ("1w", 5), ("1m", 21)]
 
+# Bump when the model roster or the maths changes, so old cached forecasts are ignored.
+_CACHE_VERSION = "1"
+_CACHE_TTL_MINUTES = 7 * 24 * 60
+
 
 class ForecastError(RuntimeError):
     """Raised when a forecast cannot be produced (e.g. insufficient history)."""
+
+
+def _cache_key(ticker: str, prices: pd.DataFrame) -> str:
+    """Key on ticker + the date of the last price bar + the settings that affect training.
+
+    Keying on the last *bar* rather than wall-clock time means a new trading day
+    invalidates the entry by itself — a stale forecast can never be served as today's.
+    """
+    last_bar = pd.Timestamp(prices.index[-1]).strftime("%Y-%m-%d")
+    cfg = "|".join(str(x) for x in (
+        _CACHE_VERSION,
+        settings.min_history_rows,
+        settings.forecast_test_size,
+        settings.price_period,
+        settings.price_interval,
+        HORIZONS,
+    ))
+    digest = hashlib.sha1(cfg.encode("utf-8")).hexdigest()[:8]
+    return f"forecast_{ticker}_{last_bar}_{digest}"
 
 
 def _cv_rmse(model, X: pd.DataFrame, y: pd.Series, n_splits: int = 3) -> float:
@@ -55,10 +87,31 @@ def _horizon_targets(close: pd.Series, h: int) -> pd.Series:
     return np.log(close.shift(-h) / close)
 
 
-def run_forecast(prices: pd.DataFrame, ticker: str) -> ForecastResult:
-    feats = build_features(prices)
+def run_forecast(prices: pd.DataFrame, ticker: str, use_cache: bool = True) -> ForecastResult:
+    key = _cache_key(ticker, prices) if use_cache and len(prices) else None
+    if key:
+        cached = cache.read_json(key, ttl_minutes=_CACHE_TTL_MINUTES)
+        if cached:
+            try:
+                logger.info("forecast for %s served from cache", ticker)
+                return ForecastResult.model_validate(cached)
+            except Exception:  # noqa: BLE001 - a stale/incompatible entry just retrains
+                logger.warning("cached forecast for %s was unusable; retraining", ticker)
+
+    # Sentiment becomes a model input only once we've accumulated enough daily readings —
+    # the news API can't supply history, so `build_features` refuses a sparse column.
+    try:
+        from database.db import sentiment_history
+
+        sentiment = sentiment_history(ticker)
+    except Exception as exc:  # noqa: BLE001 - never fail a forecast over an optional feature
+        logger.warning("sentiment history unavailable for %s: %s", ticker, exc)
+        sentiment = {}
+
+    feats = build_features(prices, sentiment=sentiment)
     cols = feature_columns(feats)
     close = prices["Close"]
+    uses_sentiment = SENTIMENT_COL in cols
 
     labelled = feats.dropna(subset=cols + [TARGET])
     if len(labelled) < settings.min_history_rows:
@@ -147,13 +200,25 @@ def run_forecast(prices: pd.DataFrame, ticker: str) -> ForecastResult:
         for _, h in HORIZONS
     }
 
-    def _horizons(hr: dict[int, float]) -> list[HorizonForecast]:
+    # ── Prediction intervals (split conformal on the ensemble's holdout residuals) ──
+    # Calibrated on data the models did not train on, and its coverage measured on a slice
+    # not used for calibration — see forecasting/intervals.py.
+    q_1d, interval_coverage, n_calib = calibrate(y_te_arr, ens_test, DEFAULT_LEVEL)
+    interval_level = DEFAULT_LEVEL if q_1d is not None else 0.0
+
+    def _horizons(hr: dict[int, float], with_interval: bool = False) -> list[HorizonForecast]:
         out = []
         for label, h in HORIZONS:
             r = float(hr.get(h, 0.0))
+            lower = upper = None
+            if with_interval and q_1d is not None:
+                band = scale_for_horizon(q_1d, h)
+                lower = last_close * float(np.exp(r - band))
+                upper = last_close * float(np.exp(r + band))
             out.append(HorizonForecast(
                 horizon=label, horizon_days=h,
                 predicted_return=r, predicted_price=last_close * float(np.exp(r)),
+                lower=lower, upper=upper,
             ))
         return out
 
@@ -162,8 +227,9 @@ def run_forecast(prices: pd.DataFrame, ticker: str) -> ForecastResult:
                       metrics=metrics[name], horizons=_horizons(horizon_ret.get(name, {})))
         for name in test_preds
     ]
+    # Only the ensemble carries an interval: the calibration residuals are the ensemble's.
     ensemble = ModelForecast(name="Ensemble", weight=1.0, metrics=ens_metrics,
-                             horizons=_horizons(ens_horizon))
+                             horizons=_horizons(ens_horizon, with_interval=True))
 
     # best model by holdout RMSE (ensemble included)
     candidates = {name: metrics[name].rmse for name in test_preds}
@@ -191,7 +257,32 @@ def run_forecast(prices: pd.DataFrame, ticker: str) -> ForecastResult:
             "treat the point forecast with caution."
         )
 
-    return ForecastResult(
+    # ── Would following it have made money? ──────────────────────
+    strategy = strategy_backtest([float(v) for v in pred_price], [float(v) for v in actual_price])
+
+    if interval_level:
+        notes.append(
+            f"The {interval_level*100:.0f}% range is a split-conformal interval calibrated on "
+            f"{n_calib} held-out days. Longer horizons are widened by the square root of time, "
+            f"which is an assumption rather than a measurement."
+        )
+        if interval_coverage is not None:
+            notes.append(
+                f"On days not used to set the width, the truth fell inside the range "
+                f"{interval_coverage*100:.0f}% of the time (target {interval_level*100:.0f}%)."
+            )
+    else:
+        notes.append("Too little held-out data to publish a prediction range for this stock.")
+
+    if uses_sentiment:
+        notes.append("News sentiment is included as a model input for this stock — enough daily "
+                     "readings have been accumulated to train on it.")
+    else:
+        notes.append("News sentiment is NOT a model input here. The news API serves only about "
+                     "four weeks of history, so daily readings are being accumulated as analyses "
+                     "run; sentiment currently affects the recommendation, not the forecast.")
+
+    result = ForecastResult(
         ticker=ticker,
         last_close=last_close,
         as_of=datetime.now(),
@@ -204,5 +295,12 @@ def run_forecast(prices: pd.DataFrame, ticker: str) -> ForecastResult:
         backtest_actual=[float(v) for v in actual_price],
         backtest_pred=[float(v) for v in pred_price],
         feature_importance={k: round(v, 4) for k, v in list(agg_imp.items())[:12]},
+        interval_level=interval_level,
+        interval_coverage=interval_coverage,
+        interval_n_calibration=n_calib,
+        strategy=strategy,
         notes=notes,
     )
+    if key:
+        cache.write_json(key, result.model_dump(mode="json"))
+    return result

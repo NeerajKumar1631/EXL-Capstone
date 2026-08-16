@@ -11,7 +11,7 @@ from datetime import datetime
 
 from config.logging_config import get_logger
 from config.settings import settings
-from database.models import Base, Run, Watch
+from database.models import Base, DailySentiment, Run, Watch
 from orchestration.schemas import AnalysisResult
 
 logger = get_logger("database")
@@ -75,6 +75,76 @@ def recent_runs(limit: int = 25) -> list[dict]:
     except Exception as exc:  # noqa: BLE001
         logger.warning("failed to read runs: %s", exc)
         return []
+
+
+def all_runs(limit: int = 500) -> list[dict]:
+    """Every persisted run with the fields needed to grade it against what happened.
+
+    Distinct from `recent_runs`, which formats for display; this keeps raw types so the
+    track-record scorer can do arithmetic and date lookups on them.
+    """
+    try:
+        with _session_factory()() as s:
+            rows = s.query(Run).order_by(Run.created_at.desc()).limit(limit).all()
+            return [
+                {
+                    "id": r.id,
+                    "created_at": r.created_at,
+                    "ticker": r.ticker,
+                    "company": r.company,
+                    "action": r.action,
+                    "confidence": r.confidence,
+                    "last_close": r.last_close,
+                    "next_day_price": r.next_day_price,
+                    "beats_baseline": r.beats_baseline,
+                }
+                for r in rows
+            ]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("failed to read runs: %s", exc)
+        return []
+
+
+def latest_run_by_ticker() -> dict[str, dict]:
+    """The most recent run for each ticker, keyed by ticker (for the watchlist cards)."""
+    latest: dict[str, dict] = {}
+    for row in all_runs():
+        latest.setdefault(row["ticker"], row)   # all_runs() is newest-first
+    return latest
+
+
+# ── Daily sentiment history ───────────────────────────────
+def record_sentiment(ticker: str, day: str, score: float, label: str, n_articles: int) -> None:
+    """Store one day's sentiment reading (last write wins for a given ticker+day).
+
+    The news API serves only ~4 weeks of history, so a sentiment feature can't be trained on
+    the past — this accumulates it going forward instead.
+    """
+    try:
+        with _session_factory()() as s:
+            row = (s.query(DailySentiment)
+                   .filter(DailySentiment.ticker == ticker, DailySentiment.day == day)
+                   .first())
+            if row:
+                row.score, row.label = score, label
+                row.n_articles, row.recorded_at = n_articles, datetime.now()
+            else:
+                s.add(DailySentiment(ticker=ticker, day=day, score=score, label=label,
+                                     n_articles=n_articles, recorded_at=datetime.now()))
+            s.commit()
+    except Exception as exc:  # noqa: BLE001 - never break an analysis over bookkeeping
+        logger.warning("record_sentiment failed for %s %s: %s", ticker, day, exc)
+
+
+def sentiment_history(ticker: str) -> dict[str, float]:
+    """Every stored sentiment reading for a ticker, as {'YYYY-MM-DD': score}."""
+    try:
+        with _session_factory()() as s:
+            rows = s.query(DailySentiment).filter(DailySentiment.ticker == ticker).all()
+            return {r.day: r.score for r in rows}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("sentiment_history failed for %s: %s", ticker, exc)
+        return {}
 
 
 # ── Watchlist ─────────────────────────────────────────────

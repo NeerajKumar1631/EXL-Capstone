@@ -1,14 +1,39 @@
-"""End-to-end integration + edge-case sweep across the whole v2 surface.
+"""End-to-end integration + edge-case sweep across the whole v2/v3 surface.
 
 Exercises: US + India analysis, invalid ticker, low-history guard, risk, screener,
 compare (mixed region), report export, watchlist, and the chat agent (LLM + fallback).
 Run:  PYTHONPATH=. .venv/bin/python scripts/integration_e2e.py
+
+Runs against a **throwaway database and cache**, so a sweep never leaves rows in the real
+`data_cache/stocksense.db` (it writes watchlist entries and daily sentiment readings). The
+sandbox is removed on exit — including on failure, and on Ctrl-C.
 """
 from __future__ import annotations
 
+import atexit
+import shutil
+import tempfile
 import warnings
+from pathlib import Path
 
 warnings.filterwarnings("ignore")
+
+# ── Sandbox: must be set before anything opens the database or the cache ──
+from config.settings import settings  # noqa: E402
+
+_SANDBOX = Path(tempfile.mkdtemp(prefix="stocksense_e2e_"))
+settings.cache_dir = _SANDBOX
+settings.db_path = _SANDBOX / "stocksense.db"
+settings.ensure_dirs()
+
+
+@atexit.register
+def _cleanup() -> None:
+    """Remove the sandbox however the script ends — success, exception or Ctrl-C."""
+    shutil.rmtree(_SANDBOX, ignore_errors=True)
+
+
+print(f"sandbox: {_SANDBOX} (removed on exit; your real database is untouched)")
 
 results: list[tuple[str, bool, str]] = []
 

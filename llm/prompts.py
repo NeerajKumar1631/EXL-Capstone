@@ -18,6 +18,7 @@ def _fmt_articles(articles: list[Article]) -> str:
 
 
 def summary_prompt(company: str, ticker: str, articles: list[Article]) -> str:
+    """News-only summary. Used when there is no forecast, so no recommendation is possible."""
     return (
         f"You are a financial news analyst. Summarize the recent news about {company} ({ticker}) "
         f"in 4-6 sentences. Focus on facts that could move the stock (earnings, guidance, products, "
@@ -26,7 +27,7 @@ def summary_prompt(company: str, ticker: str, articles: list[Article]) -> str:
     )
 
 
-def recommendation_prompt(
+def combined_prompt(
     company: str,
     ticker: str,
     forecast: ForecastResult,
@@ -34,6 +35,12 @@ def recommendation_prompt(
     context: MarketContext,
     articles: list[Article],
 ) -> str:
+    """One call producing both the news summary and the recommendation.
+
+    Merging halves request usage — free tier allows 20 requests/day per model — and keeps the
+    summary consistent with the sentiment score, because this prompt carries both. `news_summary`
+    is requested first so the model reads the news before it commits to a verdict.
+    """
     e = forecast.ensemble
     nd = e.next_day
     horizon_txt = ", ".join(
@@ -43,9 +50,10 @@ def recommendation_prompt(
     macro = ", ".join(f"{k}={v}" for k, v in context.macro.items()) or "n/a"
 
     return (
-        f"You are a prudent equity research assistant. Decide Buy, Hold, or Sell for {company} ({ticker}) "
-        f"for a retail investor, using ONLY the evidence below. Never invent numbers or events. "
-        f"If the model shows no skill over the naive baseline, weight the news/fundamentals more and lower your confidence.\n\n"
+        f"You are a prudent equity research assistant covering {company} ({ticker}) for a retail "
+        f"investor. Do two things, using ONLY the evidence below. Never invent numbers or events. "
+        f"If the model shows no skill over the naive baseline, weight the news/fundamentals more "
+        f"and lower your confidence.\n\n"
         f"=== QUANTITATIVE FORECAST (next-day log returns; honestly evaluated) ===\n"
         f"Last close: ${forecast.last_close:.2f}\n"
         f"Ensemble next-day: {nd.predicted_return*100:+.2f}% -> ${nd.predicted_price:.2f}\n"
@@ -60,8 +68,13 @@ def recommendation_prompt(
         f"=== FUNDAMENTALS ===\n{fund}\n\n"
         f"=== MACRO ===\n{macro}\n\n"
         f"=== TOP ARTICLES ===\n{_fmt_articles(articles)}\n\n"
-        f"Return JSON with: action (Buy/Hold/Sell); confidence (0-1, calibrated — low if the model lacks skill "
-        f"and news is mixed); thesis (3-5 sentence plain-English 'why buy or why not' for a retail investor); "
-        f"positive_factors, negative_factors, risks, opportunities (each a short list, each item grounded in a "
-        f"number or an article above). Be balanced and never guarantee returns."
+        f"Return JSON with:\n"
+        f"1. news_summary — a 4-6 sentence summary of the recent news, written FIRST, before you "
+        f"decide anything. Focus on facts that could move the stock (earnings, guidance, products, "
+        f"legal, macro). Use only the articles above. End with the overall tone.\n"
+        f"2. Then, reasoning from that summary and the numbers: action (Buy/Hold/Sell); "
+        f"confidence (0-1, calibrated — low if the model lacks skill and news is mixed); "
+        f"thesis (3-5 sentence plain-English 'why buy or why not' for a retail investor); "
+        f"positive_factors, negative_factors, risks, opportunities (each a short list, each item "
+        f"grounded in a number or an article above). Be balanced and never guarantee returns."
     )

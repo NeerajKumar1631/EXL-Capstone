@@ -12,7 +12,9 @@ from orchestration.schemas import (
     RiskProfile,
     SentimentSummary,
 )
-from report.export import to_html, to_markdown
+import pytest
+
+from report.export import _pdf_safe, to_html, to_markdown, to_pdf
 
 
 def _full_result() -> AnalysisResult:
@@ -49,3 +51,27 @@ def test_markdown_handles_partial_result():
 def test_html_wraps_markdown():
     html = to_html(_full_result())
     assert html.startswith("<!doctype html>") and "StockSense" in html
+
+
+# ── PDF export ────────────────────────────────────────
+def test_pdf_safe_folds_typography_to_latin1():
+    """fpdf2's built-in fonts are latin-1 only; an em dash used to crash the export."""
+    out = _pdf_safe("Buy — 62% confidence · “quoted” … ≈ ₹100 ⚠")
+    assert "—" not in out and "·" not in out and "…" not in out
+    out.encode("latin-1")  # must not raise
+
+
+def test_to_pdf_produces_a_real_pdf():
+    pdf = to_pdf(_full_result())
+    if pdf is None:
+        pytest.skip("fpdf2 not installed — PDF export is optional")
+    assert pdf.startswith(b"%PDF-")
+    assert len(pdf) > 500
+
+
+def test_to_pdf_survives_a_partial_result():
+    partial = AnalysisResult(ticker="ZZ", as_of=datetime.now(), errors=["nope"])
+    pdf = to_pdf(partial)
+    if pdf is None:
+        pytest.skip("fpdf2 not installed — PDF export is optional")
+    assert pdf.startswith(b"%PDF-")

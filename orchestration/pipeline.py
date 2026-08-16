@@ -10,13 +10,14 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Callable, Optional
 
+from agents.base import StageError
 from agents.pipeline_agents import (
+    AnalystAgent,
     ContextAgent,
     DataCollectionAgent,
     DedupAgent,
     ForecastAgent,
     NewsCollectionAgent,
-    RecommendationAgent,
     RetrievalAgent,
     RiskAgent,
     SentimentAgent,
@@ -26,6 +27,7 @@ from config.logging_config import get_logger
 from config.settings import settings
 from data_ingestion.markets import benchmark_for, infer_region
 from data_ingestion.prices import fetch_prices, resolve_company_name
+from llm.summarizer import headline_digest
 from orchestration.schemas import (
     AnalysisResult,
     Article,
@@ -39,6 +41,33 @@ logger = get_logger("pipeline")
 _NEUTRAL = SentimentSummary(weighted_score=0.0, label="neutral", n_articles=0)
 
 
+class _Problems:
+    """Collects what went wrong, split by audience.
+
+    `errors`/`warnings` are plain sentences for the user; `details` keeps the matching
+    exception text so it can sit behind a "technical details" expander rather than on the
+    dashboard.
+    """
+
+    def __init__(self) -> None:
+        self.errors: list[str] = []
+        self.warnings: list[str] = []
+        self.details: list[str] = []
+
+    def error(self, err) -> None:
+        self.errors.append(str(err))
+        self._detail(err)
+
+    def warn(self, err) -> None:
+        self.warnings.append(str(err))
+        self._detail(err)
+
+    def _detail(self, err) -> None:
+        detail = getattr(err, "detail", None)
+        if detail:
+            self.details.append(detail)
+
+
 def _safe_fetch_prices(ticker: str):
     """Fetch prices without raising (used for the benchmark). Returns None on failure."""
     try:
@@ -48,17 +77,22 @@ def _safe_fetch_prices(ticker: str):
         return None
 
 
-def _process_news(
-    raw: list[Article], company: str, ticker: str, top_k: int, use_llm: bool, warns: list[str]
-) -> tuple[NewsResult, list[Article]]:
-    """dedup → rank → sentiment → aggregate → summarize, each degrading gracefully."""
+def _prepare_news(
+    raw: list[Article], company: str, top_k: int, problems: "_Problems"
+) -> tuple[list[Article], SentimentSummary, int, int]:
+    """dedup → rank → sentiment, each degrading gracefully.
+
+    Deliberately stops short of summarization: the summary is an LLM call, and it is
+    launched later alongside the recommendation so the two network waits overlap.
+    Returns (top_articles, sentiment, n_collected, n_after_dedup).
+    """
     n_collected = len(raw)
     if not raw:
-        return NewsResult(summary="No recent news was found.", sentiment=_NEUTRAL), []
+        return [], _NEUTRAL, 0, 0
 
     deduped, err = DedupAgent().safe_run(raw)
     if err:
-        warns.append(err)
+        problems.warn(err)
         deduped = raw
     n_after = len(deduped)
 
@@ -66,27 +100,17 @@ def _process_news(
     top, err = RetrievalAgent().safe_run(query, deduped, top_k)
     if err or top is None:
         if err:
-            warns.append(err)
+            problems.warn(err)
         top = deduped[:top_k]
 
     sent_out, err = SentimentAgent().safe_run(top)
     if err or sent_out is None:
-        warns.append(err or "sentiment failed")
-        summary = _NEUTRAL
+        problems.warn(err or "We couldn't score the news sentiment, so it is treated as neutral.")
+        sentiment = _NEUTRAL
     else:
-        top, summary = sent_out
+        top, sentiment = sent_out
 
-    text, err = SummarizationAgent().safe_run(company, ticker, top, use_llm)
-    if err or not text:
-        if err:
-            warns.append(err)
-        text = "; ".join(a.title for a in top[:5])
-
-    return (
-        NewsResult(summary=text, sentiment=summary, top_articles=top,
-                   n_collected=n_collected, n_after_dedup=n_after),
-        top,
-    )
+    return top, sentiment, n_collected, n_after
 
 
 def analyze(
@@ -98,8 +122,7 @@ def analyze(
     """Run the full analysis for a ticker and return a (possibly partial) AnalysisResult."""
     ticker = ticker.strip().upper()
     top_k = top_k or settings.news_top_k
-    errors: list[str] = []
-    warns: list[str] = []
+    problems = _Problems()
 
     def note(msg: str) -> None:
         logger.info(msg)
@@ -125,44 +148,75 @@ def analyze(
         benchmark_prices = f_bench.result()
 
     if nerr:
-        warns.append(nerr)
+        problems.warn(nerr)
     if cerr:
-        warns.append(cerr)
+        problems.warn(cerr)
         context = MarketContext()
     context = context or MarketContext()
 
     if prices is None:
-        # Prices are essential — return early with a clear error.
-        errors.append(perr or f"No price data for {ticker}.")
+        # Prices are essential — return early. A bad symbol is by far the likeliest cause,
+        # so say that plainly rather than reusing the generic stage message.
+        problems.error(StageError(
+            f"We couldn't find any price data for {ticker}. Check the symbol — US symbols "
+            f"look like AAPL, Indian ones like TCS.NS.",
+            getattr(perr, "detail", "") or f"no price data for {ticker}",
+        ))
         return AnalysisResult(ticker=ticker, company_name=company, as_of=datetime.now(),
-                              errors=errors, warnings=warns)
+                              errors=problems.errors, warnings=problems.warnings,
+                              details=problems.details)
 
-    # Stage 2 — forecast, news-processing, and risk concurrently.
+    # Stage 2 — forecast, news ranking/sentiment, and risk concurrently.
     note("Forecasting, analyzing sentiment, and measuring risk…")
     with ThreadPoolExecutor(max_workers=3) as ex:
         f_fc = ex.submit(ForecastAgent().safe_run, prices, ticker)
-        f_np = ex.submit(_process_news, raw_news or [], company, ticker, top_k, use_llm, warns)
+        f_np = ex.submit(_prepare_news, raw_news or [], company, top_k, problems)
         f_risk = ex.submit(RiskAgent().safe_run, prices, benchmark_prices, benchmark)
         forecast, ferr = f_fc.result()
-        news_result, top_articles = f_np.result()
+        top_articles, sentiment, n_collected, n_after_dedup = f_np.result()
         risk, rkerr = f_risk.result()
 
     if ferr:
-        errors.append(ferr)
+        problems.error(ferr)
     if rkerr:
-        warns.append(rkerr)
+        problems.warn(rkerr)
 
-    # Stage 3 — fuse into a recommendation (needs the forecast).
+    # Stage 3 — one LLM call returns the news summary AND the recommendation together.
+    # Halves request usage (it matters on a free tier) and keeps the summary consistent
+    # with the sentiment score, because the same prompt carries both.
     recommendation = None
     if forecast is not None:
-        note("Generating recommendation…")
-        recommendation, rerr = RecommendationAgent().safe_run(
-            company, ticker, forecast, news_result.sentiment, context, top_articles, use_llm,
+        note("Writing the news summary and the recommendation…")
+        out, aerr = AnalystAgent().safe_run(
+            company, ticker, forecast, sentiment, context, top_articles, use_llm,
         )
-        if rerr:
-            warns.append(rerr)
+        if aerr or out is None:
+            problems.warn(aerr or "We couldn't generate the summary and recommendation.")
+            text = headline_digest(company, top_articles)
+        else:
+            text, recommendation = out
     else:
-        warns.append("Forecast unavailable — recommendation skipped.")
+        # No forecast means no recommendation to make, but the news is still worth summarizing.
+        problems.warn("Without a forecast we can't make a Buy/Hold/Sell call, "
+                      "so only the news is shown below.")
+        note("Summarizing the news…")
+        text, serr = SummarizationAgent().safe_run(company, ticker, top_articles, use_llm)
+        if serr or not text:
+            if serr:
+                problems.warn(serr)
+            text = headline_digest(company, top_articles)
+
+    news_result = NewsResult(summary=text, sentiment=sentiment, top_articles=top_articles,
+                             n_collected=n_collected, n_after_dedup=n_after_dedup)
+
+    # Accumulate today's sentiment reading. The news API only serves ~4 weeks of history, so
+    # this is the only way a sentiment feature can ever have a trainable past — see
+    # `technical_analysis/features.attach_sentiment`.
+    if sentiment.n_articles:
+        from database.db import record_sentiment
+
+        record_sentiment(ticker, datetime.now().strftime("%Y-%m-%d"),
+                         sentiment.weighted_score, sentiment.label, sentiment.n_articles)
 
     note("Done.")
     return AnalysisResult(
@@ -175,6 +229,7 @@ def analyze(
         recommendation=recommendation,
         risk=risk,
         prices=prices,
-        errors=errors,
-        warnings=warns,
+        errors=problems.errors,
+        warnings=problems.warnings,
+        details=problems.details,
     )

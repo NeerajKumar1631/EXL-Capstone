@@ -1,10 +1,26 @@
 """Central configuration, loaded from environment / .env via pydantic-settings."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# ── OpenMP: must be set before xgboost/lightgbm/catboost/torch ever load ──
+# Two OpenMP runtimes live in this process — Homebrew's libomp (the GBMs) and the copy
+# bundled inside PyTorch. When the forecast trains in one thread while MiniLM/FinBERT run
+# in another, their worker threads collide and the process dies with SIGSEGV inside
+# `__kmp_fork_barrier` (confirmed from a macOS crash report).
+#
+# Pinning to one thread removes the worker pool, and therefore the barrier. It is not a
+# performance sacrifice: on ~450-row training data, thread coordination costs more than it
+# saves — measured 5.07s -> 4.02s, with identical directional accuracy and skill.
+#
+# This lives here, not in run.sh, so tests and scripts get it too. Every heavy library in
+# this codebase is imported lazily inside functions, so `config.settings` always wins the race.
+for _var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
+    os.environ.setdefault(_var, "1")
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -42,7 +58,7 @@ class Settings(BaseSettings):
     # ── v2: markets & screener ────────────────────────────
     default_region: str = "US"        # "US" or "INDIA"
     screener_max_constituents: int = 60   # cap per index (huge indices are time-boxed)
-    screener_concurrency: int = 8         # parallel workers for batch scoring
+    screener_concurrency: int = 16        # parallel workers for batch scoring (I/O-bound fetches)
 
     # ── Paths ─────────────────────────────────────────────
     cache_dir: Path = PROJECT_ROOT / "data_cache"
