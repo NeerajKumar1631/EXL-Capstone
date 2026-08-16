@@ -4,7 +4,8 @@ import streamlit as st
 
 from database.db import recent_runs
 
-_shared.page_header("Analysis History", "Every analysis run on this machine, saved to SQLite.")
+_shared.page_header("Analysis History", "Every analysis run on this machine, saved to SQLite.",
+                    eyebrow="More")
 
 rows = recent_runs(50)
 if not rows:

@@ -3,7 +3,8 @@ import _shared
 import streamlit as st
 
 _shared.page_header("Recommendation",
-                    "Every factor below is tied to a computed number or a cited article.")
+                    "Every factor below is tied to a computed number or a cited article.",
+                    eyebrow="Decision")
 
 r = _shared.require_result("a Buy / Hold / Sell call with the reasoning behind it")
 if r and r.recommendation:
@@ -11,26 +12,25 @@ if r and r.recommendation:
     _shared.action_badge(reco.action, reco.confidence)
     st.write("")
 
-    st.subheader("Why buy, why not")
-    st.write(reco.thesis)
+    _shared.section("Why buy, why not")
+    with st.container(border=True):
+        st.write(reco.thesis)
 
+    def _factor_card(col, dot: str, heading: str, items: list[str]) -> None:
+        with col, st.container(border=True):
+            st.markdown(f"{_shared.tone_dot(dot)} **{heading}**", unsafe_allow_html=True)
+            for f in items or ["—"]:
+                st.markdown(f"- {f}")
+
+    _shared.section("The case, both ways")
     c1, c2 = st.columns(2)
-    with c1:
-        st.markdown("#### Positive factors")
-        for f in reco.positive_factors or ["—"]:
-            st.markdown(f"- {f}")
-        st.markdown("#### Opportunities")
-        for f in reco.opportunities or ["—"]:
-            st.markdown(f"- {f}")
-    with c2:
-        st.markdown("#### Negative factors")
-        for f in reco.negative_factors or ["—"]:
-            st.markdown(f"- {f}")
-        st.markdown("#### Risks")
-        for f in reco.risks or ["—"]:
-            st.markdown(f"- {f}")
+    _factor_card(c1, "positive", "Positive factors", reco.positive_factors)
+    _factor_card(c2, "negative", "Negative factors", reco.negative_factors)
+    c3, c4 = st.columns(2)
+    _factor_card(c3, "positive", "Opportunities", reco.opportunities)
+    _factor_card(c4, "negative", "Risks", reco.risks)
 
-    st.subheader("Sources")
+    _shared.section("Sources", "the evidence the call cites")
     for a in r.news.top_articles[:6]:
         st.markdown(f"{_shared.tone_dot(a.sentiment_label)} &nbsp; [{a.title}]({a.url}) "
                     f"<span class='ss-muted'>— {a.source}</span>", unsafe_allow_html=True)

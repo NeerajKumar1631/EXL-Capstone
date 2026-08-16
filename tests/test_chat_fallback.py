@@ -50,3 +50,25 @@ def test_fallback_no_ticker_is_helpful():
     answer, tools = a.ask("hello there")
     assert tools == [] and "ticker" in answer.lower()
     assert "not financial advice" in answer.lower()
+
+
+def test_fallback_resolves_company_names_when_intent_is_clear():
+    """"tesla" in lowercase should reach the risk tool as TSLA via symbol search."""
+    from orchestration.schemas import SymbolHit
+
+    a = _agent_no_llm()
+    hit = SymbolHit(symbol="TSLA", name="Tesla, Inc.", exchange="NASDAQ", in_region=True)
+    with patch("data_ingestion.markets.search_symbols", return_value=[hit]) as search, \
+         patch("chat.tools._risk_text", return_value="RISK"):
+        answer, tools = a.ask("how risky is tesla?")
+    assert tools == ["risk_history"] and "RISK" in answer
+    search.assert_called()
+
+
+def test_fallback_never_searches_on_small_talk():
+    """No stock intent -> no symbol search -> no arbitrary match for "hello"."""
+    a = _agent_no_llm()
+    with patch("data_ingestion.markets.search_symbols") as search:
+        answer, tools = a.ask("hello there")
+    search.assert_not_called()
+    assert tools == [] and "ticker" in answer.lower()

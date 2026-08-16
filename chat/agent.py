@@ -59,22 +59,66 @@ def _extract_tickers(text: str) -> list[str]:
     return list(dict.fromkeys(found))
 
 
+# The fallback only attempts company-name -> ticker resolution when the message clearly
+# talks about stocks. This keeps small talk ("hello there") from triggering a symbol
+# search that could dredge up an arbitrary match.
+_INTENT_WORDS = ("risk", "risky", "volatil", "drawdown", "compare", " vs ", "versus",
+                 "analy", "outlook", "forecast", "buy", "sell", "hold", "price",
+                 "stock", "share", "invest", "news")
+_COMMON_WORDS = {"how", "what", "why", "when", "should", "could", "would", "the", "and",
+                 "for", "with", "about", "tell", "show", "give", "please", "today", "now",
+                 "risky", "risk", "volatile", "volatility", "drawdown", "compare", "versus",
+                 "analyze", "analyse", "analysis", "outlook", "forecast", "buy", "sell",
+                 "hold", "price", "prices", "stock", "stocks", "share", "shares", "invest",
+                 "investing", "news", "top", "best", "good", "bad", "between", "them"}
+
+
+def _resolve_names(message: str, low: str, tickers: list[str]) -> list[str]:
+    """Fill in tickers from company names ("tesla" -> TSLA) via the symbol search.
+
+    Only runs when the message has stock intent and fewer than 2 explicit tickers.
+    Best-effort and silent on failure — the fallback must never raise.
+    """
+    if len(tickers) >= 2 or not any(w in low for w in _INTENT_WORDS):
+        return tickers
+    try:
+        from data_ingestion.markets import search_symbols
+
+        words = re.findall(r"[A-Za-z]{3,}", message)
+        candidates = [w for w in words
+                      if w.lower() not in _COMMON_WORDS and w.upper() not in tickers][:3]
+        out = list(tickers)
+        for word in candidates:
+            hits = search_symbols(word, settings.default_region, limit=1)
+            if hits and hits[0].symbol not in out:
+                out.append(hits[0].symbol)
+            if len(out) >= 3:
+                break
+        return out
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("name resolution failed: %s", exc)
+        return tickers
+
+
 class ChatAgent:
+    """LangChain agent with the SAME model-fallback discipline as `llm.client.LLMClient`.
+
+    The original version pinned one model; when its 20-requests/day free-tier quota ran
+    out, chat dropped to rule-based even though the fallback models still had quota. Now
+    it walks `settings.gemini_models` and shares the LLMClient's quota-cooldown map, so a
+    model parked by the analyst call is skipped here too (and vice versa).
+    """
+
     def __init__(self) -> None:
-        self._agent = None
+        self._agents: dict[str, object] = {}     # model name -> compiled agent (lazy)
         self._ready = False
         if settings.has_gemini:
-            try:
-                from langchain_google_genai import ChatGoogleGenerativeAI
-                from langgraph.prebuilt import create_react_agent
+            try:  # verify the stack imports; building agents is deferred per model
+                from langchain_google_genai import ChatGoogleGenerativeAI  # noqa: F401
+                from langgraph.prebuilt import create_react_agent  # noqa: F401
 
-                from chat.tools import ALL_TOOLS
+                from chat.tools import ALL_TOOLS  # noqa: F401
 
-                llm = ChatGoogleGenerativeAI(
-                    model=settings.gemini_model, google_api_key=settings.gemini_api_key,
-                    temperature=0.2,
-                )
-                self._agent = create_react_agent(llm, ALL_TOOLS, prompt=SYSTEM_PROMPT)
                 self._ready = True
             except Exception as exc:  # noqa: BLE001
                 logger.warning("LangChain agent unavailable, will use fallback: %s", exc)
@@ -83,22 +127,46 @@ class ChatAgent:
     def available(self) -> bool:
         return self._ready
 
+    def _agent_for(self, model: str):
+        if model not in self._agents:
+            from langchain_google_genai import ChatGoogleGenerativeAI
+            from langgraph.prebuilt import create_react_agent
+
+            from chat.tools import ALL_TOOLS
+
+            llm = ChatGoogleGenerativeAI(
+                model=model, google_api_key=settings.gemini_api_key, temperature=0.2,
+            )
+            self._agents[model] = create_react_agent(llm, ALL_TOOLS, prompt=SYSTEM_PROMPT)
+        return self._agents[model]
+
     def ask(self, message: str, history: Optional[list[tuple[str, str]]] = None) -> tuple[str, list[str]]:
-        """Return (answer, tools_used). Uses the LLM agent if available, else the fallback."""
+        """Return (answer, tools_used). Tries each Gemini model, then the fallback."""
         history = history or []
         if self._ready:
-            try:
-                role_map = {"user": "human", "assistant": "ai", "human": "human", "ai": "ai"}
-                msgs = [(role_map.get(r, "human"), c) for r, c in history] + [("human", message)]
-                out = self._agent.invoke({"messages": msgs})
-                messages = out["messages"]
-                answer = _flatten(messages[-1].content)
-                tools_used = [getattr(m, "name", "") for m in messages
-                              if type(m).__name__ == "ToolMessage"]
-                if answer:
-                    return answer, [t for t in tools_used if t]
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("agent invoke failed, using fallback: %s", exc)
+            from llm.client import _quota_cooldown, get_llm
+
+            client = get_llm()   # shared cooldown map: parked models are skipped everywhere
+            role_map = {"user": "human", "assistant": "ai", "human": "human", "ai": "ai"}
+            msgs = [(role_map.get(r, "human"), c) for r, c in history] + [("human", message)]
+
+            for model in settings.gemini_models:
+                if client._parked(model):
+                    logger.info("chat skipping %s — cooling down after a quota error", model)
+                    continue
+                try:
+                    out = self._agent_for(model).invoke({"messages": msgs})
+                    messages = out["messages"]
+                    answer = _flatten(messages[-1].content)
+                    tools_used = [getattr(m, "name", "") for m in messages
+                                  if type(m).__name__ == "ToolMessage"]
+                    if answer:
+                        return answer, [t for t in tools_used if t]
+                except Exception as exc:  # noqa: BLE001
+                    cooldown = _quota_cooldown(str(exc))
+                    if cooldown is not None:
+                        client._park(model, cooldown)
+                    logger.warning("chat via %s failed, trying next: %.200s", model, exc)
         return self._fallback(message)
 
     def _fallback(self, message: str) -> tuple[str, list[str]]:
@@ -106,7 +174,7 @@ class ChatAgent:
         from chat.tools import _analyze_text, _compare_text, _risk_text, _screen_text
 
         low = message.lower()
-        tickers = _extract_tickers(message)
+        tickers = _resolve_names(message, low, _extract_tickers(message))
         note = "(rule-based — LLM unavailable) "
 
         if ("compare" in low or " vs " in low or " versus " in low) and len(tickers) >= 2:

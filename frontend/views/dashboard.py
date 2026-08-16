@@ -6,7 +6,8 @@ r = _shared.current_result()
 
 if r is None or r.forecast is None:
     _shared.page_header("Stock Analysis Dashboard",
-                        "Forecast, news sentiment and risk, combined into one grounded call.")
+                        "Forecast, news sentiment and risk, combined into one grounded call.",
+                        eyebrow="Analysis")
     if r is not None:
         _shared.show_problems(r)
     _shared.explore()
@@ -19,17 +20,31 @@ else:
     nd = fc.ensemble.next_day
 
     _shared.page_header(f"{r.company_name}",
-                        f"{r.ticker} · analysis as of {r.as_of.strftime('%d %b %Y, %H:%M')}")
+                        f"{r.ticker} · analysis as of {r.as_of.strftime('%d %b %Y, %H:%M')}",
+                        eyebrow="Analysis")
 
     if reco:
         _shared.action_badge(reco.action, reco.confidence)
         st.write("")
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Last close", f"${fc.last_close:,.2f}")
-    c2.metric("Next-day (ensemble)", f"${nd.predicted_price:,.2f}", f"{nd.predicted_return*100:+.2f}%")
-    c3.metric("Directional accuracy", f"{fc.ensemble.metrics.directional_accuracy*100:.0f}%")
-    c4.metric("News sentiment", news.sentiment.label.title(), f"{news.sentiment.weighted_score:+.2f}")
+    move = nd.predicted_return * 100
+    sent = news.sentiment
+    _shared.kpi_row([
+        {"label": "Last close", "value": f"${fc.last_close:,.2f}"},
+        {"label": "Next-day (ensemble)", "value": f"${nd.predicted_price:,.2f}",
+         "delta": f"{move:+.2f}%",
+         "sub": (f"80% range ${nd.lower:,.2f} – ${nd.upper:,.2f}"
+                 if nd.lower is not None and nd.upper is not None else None)},
+        {"label": "Directional accuracy",
+         "value": f"{fc.ensemble.metrics.directional_accuracy*100:.0f}%",
+         "delta": "beats baseline" if fc.beats_baseline else "≈ coin-flip",
+         "tone": "pos" if fc.beats_baseline else "muted"},
+        {"label": "News sentiment", "value": sent.label.title(),
+         "delta": f"{sent.weighted_score:+.2f}",
+         "tone": ("pos" if sent.label == "positive"
+                  else "neg" if sent.label == "negative" else "muted"),
+         "sub": f"{sent.n_articles} articles, credibility-weighted"},
+    ])
 
     if not fc.beats_baseline:
         st.warning(
@@ -45,10 +60,11 @@ else:
         st.plotly_chart(charts.sentiment_gauge(news.sentiment), width="stretch")
 
     if reco:
-        st.subheader("Why buy, why not")
-        st.write(reco.thesis)
+        _shared.section("Why buy, why not")
+        with st.container(border=True):
+            st.write(reco.thesis)
 
-    st.subheader("Latest headlines")
+    _shared.section("Latest headlines")
     for a in news.top_articles[:4]:
         st.markdown(f"{_shared.tone_dot(a.sentiment_label)} &nbsp; [{a.title}]({a.url}) "
                     f"<span class='ss-muted'>— {a.source}</span>", unsafe_allow_html=True)

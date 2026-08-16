@@ -3,7 +3,8 @@ import _shared
 import streamlit as st
 
 _shared.page_header("Compare Stocks",
-                    "Up to three stocks side by side on forecast, sentiment and risk.")
+                    "Up to three stocks side by side on forecast, sentiment and risk.",
+                    eyebrow="Discover")
 
 default = st.session_state.get("ticker", "AAPL")
 c1, c2 = st.columns([3, 1])
@@ -32,11 +33,11 @@ if cmp:
 
     ok = [i for i in cmp.items if i.ok]
     if ok:
-        st.subheader("Price, rebased to 100")
+        _shared.section("Price, rebased to 100")
         st.caption("Every stock starts at 100, so the lines show relative performance.")
         st.plotly_chart(charts.compare_prices_chart(ok), width="stretch")
 
-        st.subheader("Side by side")
+        _shared.section("Side by side")
         rows = [{
             "Ticker": i.ticker, "Company": i.company, "Verdict": i.action or "—",
             "Confidence": i.confidence, "Last close": i.last_close,
@@ -63,4 +64,6 @@ if cmp:
         )
     st.caption("Educational comparison only — not financial advice.")
 else:
-    st.info("Enter two or three symbols above and run a comparison.")
+    _shared.empty_state("two or three stocks side by side — forecast, sentiment and risk, "
+                        "with prices rebased to 100 so relative performance is obvious",
+                        action="Enter two or three symbols above and press Compare")

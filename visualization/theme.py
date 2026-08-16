@@ -26,18 +26,25 @@ ACTION_COLORS = {"Buy": POSITIVE, "Hold": WARNING, "Sell": NEGATIVE}
 SENTIMENT_COLORS = {"positive": POSITIVE, "negative": NEGATIVE, "neutral": MUTED}
 
 _FONT = "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
+_FONT_DISPLAY = "'Space Grotesk', Inter, sans-serif"
 
+# The page loads Inter + Space Grotesk (frontend/_style.py); charts render in the same
+# document, so they genuinely get these faces rather than a fallback.
 _TEMPLATE = go.layout.Template(
     layout=go.Layout(
         font=dict(family=_FONT, color=TEXT, size=13),
         paper_bgcolor=BG,
         plot_bgcolor=BG,
         colorway=COLORWAY,
-        xaxis=dict(gridcolor=GRID, zerolinecolor=GRID, linecolor=GRID, showline=True),
-        yaxis=dict(gridcolor=GRID, zerolinecolor=GRID, linecolor=GRID, showline=True),
-        hoverlabel=dict(bgcolor="white", font_size=12, font_family=_FONT),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        title=dict(font=dict(size=16, color=TEXT)),
+        # Quieter axes: faint dotted grid, no frame lines — the card border does that job.
+        xaxis=dict(gridcolor="#eef2f7", griddash="dot", zerolinecolor=GRID,
+                   showline=False, ticks="", tickfont=dict(color=MUTED, size=11)),
+        yaxis=dict(gridcolor="#eef2f7", griddash="dot", zerolinecolor=GRID,
+                   showline=False, ticks="", tickfont=dict(color=MUTED, size=11)),
+        hoverlabel=dict(bgcolor="white", bordercolor=GRID, font_size=12, font_family=_FONT),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
+                    bgcolor="rgba(0,0,0,0)", font=dict(size=11, color=MUTED)),
+        title=dict(font=dict(family=_FONT_DISPLAY, size=15, color=TEXT)),
         margin=dict(t=48, b=24, l=8, r=8),
     )
 )

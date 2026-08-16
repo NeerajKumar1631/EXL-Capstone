@@ -4,7 +4,8 @@ import streamlit as st
 
 from database.db import latest_run_by_ticker, list_watch, remove_watch
 
-_shared.page_header("Watchlist", "Your saved stocks and the last call made on each.")
+_shared.page_header("Watchlist", "Your saved stocks and the last call made on each.",
+                    eyebrow="Discover")
 
 saved = list_watch()
 
@@ -31,10 +32,17 @@ else:
                               unsafe_allow_html=True)
                 if run:
                     move = run["next_day_price"] / run["last_close"] - 1.0 if run["last_close"] else 0.0
-                    act.metric(run["action"], f"{run['confidence']*100:.0f}%",
-                               f"{move*100:+.2f}% next day")
+                    pill = {"Buy": "pos", "Sell": "neg"}.get(run["action"], "muted")
+                    act.markdown(
+                        f"<div style='text-align:right'>"
+                        f"<span class='ss-kpi-delta {pill}'>{run['action'].upper()} · "
+                        f"{run['confidence']*100:.0f}%</span>"
+                        f"<div class='ss-muted' style='margin-top:6px'>{move*100:+.2f}% next day</div>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
                 else:
-                    act.markdown("<span class='ss-muted'>Not analyzed yet</span>",
+                    act.markdown("<div style='text-align:right' class='ss-muted'>Not analyzed yet</div>",
                                  unsafe_allow_html=True)
 
                 if run:

@@ -2,18 +2,19 @@
 import _shared
 import streamlit as st
 
-_shared.page_header("News", "What was published recently, and what it adds up to.")
+_shared.page_header("News", "What was published recently, and what it adds up to.",
+                    eyebrow="News")
 
 r = _shared.require_result("a news summary and the articles it was built from")
 if r:
     news = r.news
 
-    st.subheader("Summary")
+    _shared.section("Summary")
     st.write(news.summary)
     st.caption(f"{news.n_collected} collected · {news.n_after_dedup} after removing duplicates · "
                f"{len(news.top_articles)} ranked by relevance")
 
-    st.subheader("Articles")
+    _shared.section("Articles", "ranked by relevance")
     for a in news.top_articles:
         with st.container(border=True):
             head, meta = st.columns([4, 1])

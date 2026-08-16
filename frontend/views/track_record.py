@@ -5,7 +5,8 @@ import streamlit as st
 from analytics.track_record import evaluate
 
 _shared.page_header("Track Record",
-                    "Every saved prediction, checked against what the price actually did.")
+                    "Every saved prediction, checked against what the price actually did.",
+                    eyebrow="More")
 
 with st.spinner("Checking past predictions against real prices…"):
     rec = evaluate()
@@ -13,14 +14,18 @@ with st.spinner("Checking past predictions against real prices…"):
 if not rec.total_runs:
     _shared.empty_state("a running tally of how accurate its own predictions have been")
 else:
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Predictions scored", rec.n_graded)
-    c2.metric("Direction correct", rec.n_correct)
-    c3.metric("Hit rate", "—" if rec.hit_rate is None else f"{rec.hit_rate*100:.0f}%",
-              help="A coin-flip is 50%. Daily direction is close to random.")
-    c4.metric("Avg price error", "—" if rec.mean_abs_pct_error is None
-              else f"{rec.mean_abs_pct_error*100:.2f}%",
-              help="Mean absolute difference between the predicted and actual next-day close")
+    _shared.kpi_row([
+        {"label": "Predictions scored", "value": str(rec.n_graded),
+         "sub": (f"{rec.pending} pending · {rec.unverifiable} unverifiable"
+                 if rec.pending or rec.unverifiable else None)},
+        {"label": "Direction correct", "value": str(rec.n_correct)},
+        {"label": "Hit rate",
+         "value": "—" if rec.hit_rate is None else f"{rec.hit_rate*100:.0f}%",
+         "sub": "a coin-flip is 50% — daily direction is close to random"},
+        {"label": "Avg price error",
+         "value": "—" if rec.mean_abs_pct_error is None else f"{rec.mean_abs_pct_error*100:.2f}%",
+         "sub": "predicted vs actual next-day close"},
+    ])
 
     if rec.n_graded == 0 and rec.pending:
         st.info(
@@ -53,7 +58,7 @@ else:
     if rec.graded:
         import pandas as pd
 
-        st.subheader("Every scored prediction")
+        _shared.section("Every scored prediction")
         rows = [{
             "When": g.when, "Ticker": g.ticker, "Verdict": g.action,
             "Predicted": g.predicted_price, "Actual": g.actual_price,

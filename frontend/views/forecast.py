@@ -1,10 +1,11 @@
-"""Forecast — per-model metrics against the naive baseline, backtest, horizons."""
+"""Forecast — per-model metrics against the naive baseline, backtest, horizons, strategy."""
 import _shared
 import streamlit as st
 
 _shared.page_header("Forecast",
                     "Every model graded on a held-out window, against a naive "
-                    "'tomorrow = today' baseline.")
+                    "'tomorrow = today' baseline.",
+                    eyebrow="Analysis")
 
 r = _shared.require_result("the model comparison, backtest and multi-horizon forecast")
 if r:
@@ -22,8 +23,7 @@ if r:
         st.warning("The ensemble does **not** beat the naive baseline. Daily direction is "
                    "essentially a coin-flip, so the horizon prices below are indicative only.")
 
-    st.subheader("Model comparison")
-    st.caption("Evaluated on a held-out window with no look-ahead.")
+    _shared.section("Model comparison", "held-out window, no look-ahead")
     rows = []
     for m in [*fc.models, ens]:
         mm = m.metrics
@@ -55,19 +55,20 @@ if r:
     )
     st.caption(f"Best model by holdout RMSE: **{fc.best_model}**.")
 
-    st.subheader("Actual vs predicted")
+    _shared.section("Actual vs predicted", "holdout backtest")
     st.plotly_chart(charts.backtest_actual_vs_pred(fc), width="stretch")
 
-    st.subheader("Multi-horizon forecast (ensemble)")
-    if fc.interval_level:
-        st.caption(f"Each figure carries an {fc.interval_level:.0%} prediction range, not just a "
-                   f"point estimate.")
-    cols = st.columns(len(ens.horizons))
-    for col, h in zip(cols, ens.horizons):
-        col.metric(f"{h.horizon} ({h.horizon_days}d)", f"${h.predicted_price:,.2f}",
-                   f"{h.predicted_return*100:+.2f}%")
-        if h.lower is not None and h.upper is not None:
-            col.caption(f"{fc.interval_level:.0%} range  \n${h.lower:,.2f} – ${h.upper:,.2f}")
+    _shared.section("Multi-horizon forecast",
+                    f"ensemble · each with an {fc.interval_level:.0%} prediction range"
+                    if fc.interval_level else "ensemble")
+    _shared.kpi_row([
+        {"label": f"{h.horizon} · {h.horizon_days} trading day{'s' if h.horizon_days > 1 else ''}",
+         "value": f"${h.predicted_price:,.2f}",
+         "delta": f"{h.predicted_return*100:+.2f}%",
+         "sub": (f"{fc.interval_level:.0%} range ${h.lower:,.2f} – ${h.upper:,.2f}"
+                 if h.lower is not None and h.upper is not None else None)}
+        for h in ens.horizons
+    ])
 
     if fc.interval_level and fc.interval_coverage is not None:
         delta = fc.interval_coverage - fc.interval_level
@@ -83,18 +84,21 @@ if r:
     # ── Would following it have made money? ──────────────────
     if fc.strategy:
         s = fc.strategy
-        st.subheader("Would following it have made money?")
+        _shared.section("Would following it have made money?", "after transaction costs")
         st.caption("Go long whenever the model predicts a rise, otherwise hold cash — simulated "
                    "over the held-out window and compared with simply owning the stock.")
 
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Following the forecast", f"{s.strategy_return*100:+.2f}%")
-        m2.metric("Buy and hold", f"{s.buy_hold_return*100:+.2f}%")
-        m3.metric("Difference", f"{s.excess_return*100:+.2f}%",
-                  delta=f"{s.excess_return*100:+.2f}%")
-        m4.metric("Trades", s.trades,
-                  help=f"In the market {s.days_in_market} of {s.n_days} days · "
-                       f"{s.cost_bps:.0f} bps charged per position change")
+        _shared.kpi_row([
+            {"label": "Following the forecast", "value": f"{s.strategy_return*100:+.2f}%",
+             "delta": "beat buy & hold" if s.beat_buy_and_hold else "lost to buy & hold",
+             "tone": "pos" if s.beat_buy_and_hold else "neg",
+             "sub": f"in the market {s.days_in_market} of {s.n_days} days"},
+            {"label": "Buy and hold", "value": f"{s.buy_hold_return*100:+.2f}%"},
+            {"label": "Difference", "value": f"{s.excess_return*100:+.2f} pp",
+             "tone": "pos" if s.excess_return > 0 else "neg"},
+            {"label": "Trades", "value": str(s.trades),
+             "sub": f"{s.cost_bps:.0f} bps charged per position change"},
+        ])
 
         if s.beat_buy_and_hold:
             st.success(f"On this window the signal beat buy-and-hold by "
@@ -107,7 +111,7 @@ if r:
             st.caption(n)
 
     if fc.feature_importance:
-        st.subheader("What the models leaned on")
+        _shared.section("What the models leaned on")
         st.plotly_chart(charts.feature_importance_bar(fc), width="stretch")
 
     for n in fc.notes:

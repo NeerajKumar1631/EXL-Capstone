@@ -5,7 +5,8 @@ import streamlit as st
 from config import universe
 
 _shared.page_header("Index Screener",
-                    "Rank a whole index on momentum, trend and calmness. No LLM, so it is fast.")
+                    "Rank a whole index on momentum, trend and calmness. No LLM, so it is fast.",
+                    eyebrow="Discover")
 
 region = st.session_state.get("region", "US")
 indices = universe.list_indices(region)
@@ -32,7 +33,7 @@ if lb and lb.region == region:
         cov += f" · {lb.failed} unavailable"
     if lb.capped:
         cov += f" · showing the first {lb.requested} of {lb.total_constituents}"
-    st.caption(cov)
+    _shared.section("Leaderboard", cov)
 
     rows = [{
         "Rank": i + 1, "Ticker": c.ticker, "Composite": c.composite,
@@ -66,4 +67,6 @@ if lb and lb.region == region:
             _shared.analyze_ticker(pick)
             st.success(f"Analyzed {pick}. Open **Dashboard** to see the full report.")
 else:
-    st.info("Choose an index and run the screener to see a ranked leaderboard.")
+    _shared.empty_state("a ranked leaderboard of every stock in that index — "
+                        "momentum, trend and calmness scored out of 100",
+                        action="Choose an index above and run the screener")

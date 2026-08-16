@@ -604,6 +604,60 @@ refusal to report coverage on small samples, √t scaling, strategy vs buy-and-h
 falling markets, costs actually charged, and both the sparse-refused and dense-accepted
 sentiment paths. **Suite: 99 → 115.**
 
+## Phase v3.8 — Full design revamp  ✅  (2026-08-16)
+The v3.7 token pass was judged too timid; this is the real one. Five phases, verified between
+each; 115 tests + 13/13 views green after. `st.title` and the Explore buttons were deliberately
+kept so the regression gates stay meaningful.
+- [x] **Dark navy sidebar** — the single biggest feel change. Gradient panel, uppercase nav
+      section labels, quiet slate links with a glowing active pill (`aria-current="page"` +
+      inset sky accent), dark-styled inputs/selects/buttons/expanders/captions, brand lockup
+      re-tinted for dark.
+- [x] **Component library** (`_shared.py`) — `kpi_row()` renders stat cards in ONE self-aligning
+      CSS grid (`auto-fit, minmax(175px,1fr)`) instead of st.columns, so cards are equal-height,
+      wrap on narrow screens, and carry label/value/tone-chip/sub-line; `hero()` gradient panel
+      with glass chips; `section()` accent-bar headers; `page_header(eyebrow=…)`.
+- [x] **Pages recomposed** — Dashboard (KPI cards incl. the 80% range under next-day, thesis in
+      a card), Forecast (horizon cards with ranges, strategy KPI row), Risk (two 4-card rows with
+      sub-lines replacing 8 bare metrics), Track Record, Recommendation (factor lists → four
+      tone-dotted cards, "The case, both ways"), Explore (hero with chips). Every view got an
+      eyebrow matching its nav section; every st.subheader on main views → accent section.
+- [x] **Charts modernized** (`visualization/theme.py`) — faint dotted grid, no frame lines
+      (the card border does that job), muted tick labels, transparent legend, Space Grotesk
+      titles. Applies to all 8 chart builders via the template, zero signature changes.
+- [x] **Second pass, from live screenshots** — transparent `stHeader` (killed the white strip
+      clipping the eyebrow; kept alive for the sidebar-expand control), tile styling scoped to
+      `st-key-idx_*` classes only (an earlier global `min-height:86px` was inflating every
+      secondary button app-wide), tiles fixed-height 112px with name pinned top / count pinned
+      bottom + parentheticals trimmed so rows stay level, dark-sidebar inputs painted across
+      **all** BaseWeb layers (styling one layer let the white default show through),
+      `InputInstructions` overlay hidden ("Press Enter" moved into the placeholder), Recent
+      analyses table given full column_config.
+- [x] **Remaining pages** — Sentiment (KPI row + gauge beside a "how to read this" card),
+      Technical (live RSI / vs-SMA50 / MACD reading cards from the existing indicator table),
+      Screener & Compare (proper empty states with page-specific actions, leaderboard section
+      header), Ask (three runnable starter questions when the chat is empty), Watchlist
+      (verdict pill instead of a bare metric).
+
+## Phase v3.7 — Visual token pass (superseded by v3.8)  ✅  (2026-08-16)
+Full design pass, all in `frontend/_style.py` + the verdict badge in `_shared.py`. No view logic
+changed; 115 tests + 13/13 views verified after.
+- [x] **Typography** — Inter (body) + Space Grotesk (headings, metric values) via Google Fonts.
+      `visualization/theme.py` already requested Inter, so charts and page now genuinely share
+      one typeface. Metric values use tabular numerals.
+- [x] **Background** — soft three-point radial mesh instead of flat white; translucent
+      blurred sidebar with a hairline border.
+- [x] **Depth & hover** — cards, bordered containers, metric tiles and charts get layered
+      shadows and a translate-up hover lift; metric tiles reveal a gradient top edge. Hover
+      effects are gated behind `@media (hover:hover)` so they don't stick on touch screens.
+- [x] **Motion** — content fades up on entry (Streamlit's DOM diffing means only *new*
+      elements animate, not every rerun); `st.status` pulses with an accent edge while a
+      spinner is inside it (`:has()`); shimmer skeleton class retained. All animation is
+      disabled under `prefers-reduced-motion`.
+- [x] **Alignment** — Explore index tiles get a fixed min-height so rows line up regardless
+      of label length; sidebar buttons stay compact; primary buttons are gradient-filled.
+- [x] **Verdict badge** — per-action gradient (green/amber/red) with a matching soft glow.
+- [x] Inputs get a focus ring, dataframes/chat/alerts share the card radius, thin scrollbars.
+
 ### Still open (deliberately)
 - `[ ]` Dockerfile / docker-compose, Postgres swap — deferred since Phase 6
 - `[ ]` Tests for `visualization/`, `embeddings/`, `screener/score.py`, `data_ingestion/prices.py`
