@@ -658,8 +658,80 @@ changed; 115 tests + 13/13 views verified after.
 - [x] **Verdict badge** — per-action gradient (green/amber/red) with a matching soft glow.
 - [x] Inputs get a focus ring, dataframes/chat/alerts share the card radius, thin scrollbars.
 
+## Phase v3.9 — Deployment  ✅  (2026-08-16)
+
+**Host chosen by measurement, not preference.** Peak resident memory during one analysis is
+**1,060 MB** (137 MB base → 227 MB with the GBM libs → 507 MB with MiniLM → 589 MB with
+FinBERT → 1,060 MB running). That rules out Streamlit Community Cloud (1 GB cap — killed
+mid-analysis), Render free (512 MB) and small Fly instances. **Hugging Face Spaces: 16 GB RAM
+free, no card**, and it serves the model weights from its own infrastructure.
+
+- [x] `Dockerfile` — closes the item deferred since Phase 6. `python:3.13-slim` + `libgomp1`
+      (Linux equivalent of `brew install libomp`; XGBoost/LightGBM won't import without it),
+      non-root uid 1000 to match Spaces, `$PORT`-aware, healthcheck on `/_stcore/health`.
+      Two deliberate choices: **CPU-only PyTorch** from the PyTorch index (the default PyPI
+      wheel is 527 MB and drags in ~2 GB of nvidia-* CUDA packages this app never uses), and
+      **models baked in at build time** so the first visitor doesn't wait on a 530 MB download
+      or trip the startup timeout. Bakes in `OMP_NUM_THREADS=1` and
+      `ARROW_DEFAULT_MEMORY_POOL=system` — the two settings that stop the v3.2c segfaults.
+- [x] `.dockerignore` — keeps `.env`, `.venv/`, local DB/cache and dev-only material out.
+- [x] `deploy/deploy_hf.sh` + `deploy/README_SPACE.md` — one-command deploy/redeploy. The
+      Space is its own git repo and HF reads the README's YAML front-matter for configuration,
+      so the script swaps in a Space-specific README rather than polluting the project one.
+- [x] **Database persistence** (`database/sync.py`) — Spaces have an ephemeral disk, so
+      History / Track Record / Watchlist would reset on every restart, and Track Record is
+      worthless without accumulated history. Mirrors the SQLite file to a **private** HF
+      Dataset: `pull()` once at engine creation, `push()` after each write on a daemon thread,
+      coalesced to one upload per 30 s. Opt-in via `HF_DATASET_REPO` + `HF_TOKEN`; with either
+      unset every function is a no-op, so local dev and the test suite never touch the network.
+      Failures are logged and swallowed — sync must never break an analysis.
+- [x] `docs/deployment.md` + README section + `.env.example` entry.
+- [x] `tests/test_db_sync.py` (10): opt-in behaviour, restore, once-per-process pull, missing
+      dataset starting fresh, private-repo creation, non-blocking daemon push, burst
+      coalescing, and swallowed failures. **Suite: 117 → 127.**
+
+### Container verified locally  ✅  (2026-08-17)
+`docker build` → **5.76 GB image**, then run and exercised:
+- health `ok` in **3 s**; clean startup log
+- both models load in **11.9 s from the image** — the bake-in works, no network download
+- **full analysis inside the container**: AAPL → `Hold (30%)`, $304.76 → $305.37,
+  80% range $299.20–$311.67, 6 news articles, **0 errors**
+- runs as non-root `app`, `/app/data_cache` writable, SQLite created correctly
+- **109.7 MiB** resident after an analysis — the 1.06 GB figure is transient peak, so
+  headroom on a 16 GB Space is enormous
+
+Two real bugs the local build caught, which would have failed on the Space:
+1. `WORKDIR /app` makes the directory **root-owned**, so `mkdir` after `USER app` was denied.
+   Fixed by creating the dirs and `chown -R app:app /app` while still root.
+2. `CMD` in shell form triggered `JSONArgsRecommended` and would not forward `SIGTERM`.
+   Fixed with `CMD ["sh","-c","exec streamlit …"]` — `exec` makes streamlit PID 1.
+
+⚠️ Host note: two builds failed first with `input/output error` — the **Mac's disk was full**
+(138 MB free), not a Dockerfile fault. Cleared ~90 GB (unused HF models, npm/pip caches, and a
+dormant `atlas-analytics` Docker project) → 52 GB free.
+
+### ⚠️ Host choice invalidated — Hugging Face moved compute Spaces behind PRO
+The Space creation page now states: *"Gradio and Docker Spaces require a paid plan. Static
+Spaces stay free for everyone."* Only **Static** (plain HTML/JS, no Python) is free, so the
+free HF tier can no longer run this app. The earlier recommendation was based on HF's
+historical free CPU tier and was not re-verified against current pricing — a real miss.
+
+**Nothing built is wasted:** the Dockerfile is host-agnostic and verified working, so only the
+target changes. Options if this is picked up again, with the deciding constraint being the
+**~1.06 GB peak** (transient, during first-analysis model training; the idle container sits at
+~110 MB, and the forecast cache means the peak recurs only once per stock per day):
+
+| Option | Cost | Notes |
+|---|---|---|
+| Streamlit Community Cloud | free | 1 GB cap — borderline; would need trimming (drop CatBoost, shorter training window) and an honest accuracy report |
+| Google Cloud Run | free tier | runs our image unchanged, scales to zero; needs a card on file |
+| Oracle Cloud Always Free | free | 24 GB ARM VM, most headroom, but bare-VM setup |
+| HF Spaces PRO | ~$9/mo | everything already built works unchanged |
+
+Local Docker artifacts (image, container, build cache) were removed after verification.
+
 ### Still open (deliberately)
-- `[ ]` Dockerfile / docker-compose, Postgres swap — deferred since Phase 6
+- `[ ]` Choose a host and deploy; Postgres swap
 - `[ ]` Tests for `visualization/`, `embeddings/`, `screener/score.py`, `data_ingestion/prices.py`
 - `[ ]` Sentiment feature activates only after ~60% coverage accumulates (weeks of daily runs)
 - `[ ]` Pooled cross-sectional training and rolling-window evaluation (the honest version of

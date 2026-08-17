@@ -1,0 +1,27 @@
+# Keep the build context small and secrets out of the image.
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Secrets — supplied as environment variables by the host, never baked in.
+.env
+
+# Local state; the container creates its own.
+data_cache/
+models_store/
+*.db
+
+.git/
+.github/
+.claude/
+.pytest_cache/
+.DS_Store
+
+# Dev-only material.
+tests/
+scripts/
+plan.md
+architecture.md
+CLAUDE.md
+project-images.pdf

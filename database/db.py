@@ -19,9 +19,21 @@ logger = get_logger("database")
 
 @lru_cache(maxsize=1)
 def _session_factory():
+    # Restore the database before the engine opens it — on an ephemeral host this is the
+    # only chance to recover history from a previous run. No-op unless HF sync is configured.
+    from database import sync
+
+    sync.pull()
     engine = create_engine(f"sqlite:///{settings.db_path}", future=True)
     Base.metadata.create_all(engine)
     return sessionmaker(bind=engine, class_=Session, future=True)
+
+
+def _sync_push() -> None:
+    """Queue a database upload after a write (no-op unless HF sync is configured)."""
+    from database import sync
+
+    sync.push()
 
 
 def save_run(result: AnalysisResult) -> Optional[int]:
@@ -47,7 +59,9 @@ def save_run(result: AnalysisResult) -> Optional[int]:
         with _session_factory()() as s:
             s.add(run)
             s.commit()
-            return run.id
+            run_id = run.id
+        _sync_push()
+        return run_id
     except Exception as exc:  # noqa: BLE001
         logger.warning("failed to persist run: %s", exc)
         return None
@@ -132,6 +146,7 @@ def record_sentiment(ticker: str, day: str, score: float, label: str, n_articles
                 s.add(DailySentiment(ticker=ticker, day=day, score=score, label=label,
                                      n_articles=n_articles, recorded_at=datetime.now()))
             s.commit()
+        _sync_push()
     except Exception as exc:  # noqa: BLE001 - never break an analysis over bookkeeping
         logger.warning("record_sentiment failed for %s %s: %s", ticker, day, exc)
 
@@ -159,7 +174,8 @@ def add_watch(ticker: str, region: str = "US") -> bool:
                 return False
             s.add(Watch(ticker=ticker, region=region.upper(), added_at=datetime.now()))
             s.commit()
-            return True
+        _sync_push()
+        return True
     except Exception as exc:  # noqa: BLE001
         logger.warning("add_watch failed: %s", exc)
         return False
@@ -173,6 +189,7 @@ def remove_watch(ticker: str) -> None:
             if row:
                 s.delete(row)
                 s.commit()
+        _sync_push()
     except Exception as exc:  # noqa: BLE001
         logger.warning("remove_watch failed: %s", exc)
 

@@ -41,6 +41,10 @@ class Settings(BaseSettings):
     gemini_api_key: str = Field(default="", alias="GEMINI_API_KEY")
     gemini_model: str = Field(default="gemini-flash-latest", alias="GEMINI_MODEL")
     hf_token: str = Field(default="", alias="HF_TOKEN")
+    # Optional: sync the SQLite database to a private HF Dataset so History / Track Record /
+    # Watchlist survive restarts on hosts with an ephemeral disk (e.g. HF Spaces).
+    # Format "user/dataset-name". Empty (the default) keeps everything purely local.
+    hf_dataset_repo: str = Field(default="", alias="HF_DATASET_REPO")
 
     # Gemini fallback chain tried in order if the primary is retired/quota-limited.
     gemini_model_fallbacks: tuple[str, ...] = ("gemini-3.5-flash", "gemini-3-flash-preview")
@@ -86,6 +90,11 @@ class Settings(BaseSettings):
     @property
     def has_news_api(self) -> bool:
         return bool(self.news_api_key)
+
+    @property
+    def has_db_sync(self) -> bool:
+        """True when the database should be mirrored to a Hugging Face Dataset."""
+        return bool(self.hf_dataset_repo and self.hf_token)
 
 
 settings = Settings()

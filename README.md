@@ -156,9 +156,24 @@ stock-sense/
 
 ---
 
+## Documentation
+
+| Doc | For |
+|---|---|
+| **[Local Setup Guide](docs/SETUP.md)** | **Start here** — get it running on your machine in ~15 min, with every error we hit and how to fix it |
+| **[Interview Q&A](docs/INTERVIEW_QA.md)** | Questions you'll be asked about this project, answered with measured numbers |
+| [Deployment](docs/deployment.md) | Hosting it, and the memory constraints that decide where |
+| [Architecture](architecture.md) | Design, module contracts, data flow |
+| [Agent Workflow](docs/agent_workflow.md) | Step-by-step pipeline |
+| [API Reference](docs/api_reference.md) | Function signatures |
+| [Database Schema](docs/database_schema.md) | Tables and cache files |
+
 ## Installation
 
-**Requirements:** Python **3.13**, macOS/Linux, ~1 GB free (for cached ML models). CPU-only; no GPU.
+> The **[Local Setup Guide](docs/SETUP.md)** is the friendlier version of this section, with
+> troubleshooting for every problem we actually hit.
+
+**Requirements:** Python **3.11+** (3.13 used in development), macOS/Linux, ~3 GB free. CPU-only; no GPU.
 
 ```bash
 # 1) create a virtual environment on Python 3.13
@@ -237,9 +252,29 @@ a `runs` table (see the **History** and **Track Record** pages, and `docs/databa
 
 ## Deployment
 
-Local: `streamlit run frontend/app.py`. For a container, base on `python:3.13-slim`, `apt-get install
-libgomp1`, `pip install -r requirements.txt`, and set env vars — a Dockerfile is a planned addition
-(see `plan.md`, Phase 6). For a hosted demo, Streamlit Community Cloud works (add secrets in its UI).
+Full guide: **[`docs/deployment.md`](docs/deployment.md)**.
+
+```bash
+export HF_TOKEN=hf_xxx                                   # write token
+./deploy/deploy_hf.sh <your-username>/<your-space-name>  # deploy / redeploy
+```
+
+**Hugging Face Spaces** (free, 16 GB RAM) is the recommended host. Peak memory during an
+analysis was measured at **1.06 GB**, so Streamlit Community Cloud (1 GB cap) would be killed
+mid-run, and Render's free tier (512 MB) is out.
+
+The repo ships a production `Dockerfile` that runs anywhere: it installs **CPU-only PyTorch**
+(the default wheel drags in ~2 GB of unused CUDA libraries), bakes FinBERT and MiniLM into the
+image so the first visitor isn't waiting on a 530 MB download, installs `libgomp1` for
+XGBoost/LightGBM, and pins the OpenMP/pyarrow settings that this app needs to not segfault.
+
+```bash
+docker build -t stocksense . && docker run --rm -p 7860:7860 -e GEMINI_API_KEY=... stocksense
+```
+
+Free hosts have **ephemeral disks**, so set `HF_TOKEN` + `HF_DATASET_REPO` to mirror the SQLite
+database to a private Hugging Face Dataset — otherwise History, Track Record and Watchlist
+reset on every restart, and Track Record needs accumulated history to mean anything.
 
 ## Testing
 
